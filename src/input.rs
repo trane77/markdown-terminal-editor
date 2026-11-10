@@ -3,7 +3,9 @@
 use std::io::{self, Write};
 
 use ratatui::{
-    crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    crossterm::event::{
+        self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     layout::Position,
     DefaultTerminal,
 };
@@ -66,7 +68,8 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             {
                 let down = key.code == KeyCode::PageDown || (key.code == KeyCode::Char('v') && ctrl);
                 for _ in 0..app.editor_h {
-                    app.editor.move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
+                    app.editor
+                        .move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
                 }
             }
             _ => {
@@ -91,10 +94,15 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
             let down = m.kind == MouseEventKind::ScrollDown;
             if app.view == View::Preview {
-                app.preview_scroll = if down { app.preview_scroll + 3 } else { app.preview_scroll.saturating_sub(3) };
+                app.preview_scroll = if down {
+                    app.preview_scroll + 3
+                } else {
+                    app.preview_scroll.saturating_sub(3)
+                };
             } else if in_panes {
                 for _ in 0..3 {
-                    app.editor.move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
+                    app.editor
+                        .move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
                 }
             }
         }
@@ -130,9 +138,11 @@ fn follow_link(app: &mut App, dest: &str, target: Option<(usize, usize)>) {
     app.editor.cancel_selection();
     // scorre la vista di tui-textarea insieme alla nostra copia `editor_top`, poi ci mette il cursore
     let delta = line as i64 - app.editor_top as i64;
-    app.editor.scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
+    app.editor
+        .scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
     app.editor_top = line;
-    app.editor.move_cursor(CursorMove::Jump(line.min(u16::MAX as usize) as u16, 0));
+    app.editor
+        .move_cursor(CursorMove::Jump(line.min(u16::MAX as usize) as u16, 0));
     app.preview_scroll = row;
 }
 
@@ -148,7 +158,10 @@ fn jump_to(app: &mut App, pos: Position) {
         app.editor_top + (pos.y - r.y) as usize
     };
     let col = app.editor_left + pos.x.clamp(r.x, r.right().saturating_sub(1)).saturating_sub(r.x) as usize;
-    app.editor.move_cursor(CursorMove::Jump(row.min(u16::MAX as usize) as u16, col.min(u16::MAX as usize) as u16));
+    app.editor.move_cursor(CursorMove::Jump(
+        row.min(u16::MAX as usize) as u16,
+        col.min(u16::MAX as usize) as u16,
+    ));
 }
 
 /// Copia negli appunti di sistema con la sequenza OSC 52 (Windows Terminal, kitty, WezTerm, iTerm2, ...).
@@ -168,7 +181,11 @@ fn base64(data: &[u8]) -> String {
         let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
         let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
         for i in 0..4 {
-            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            out.push(if i <= chunk.len() {
+                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
         }
     }
     out
@@ -180,7 +197,14 @@ mod tests {
 
     #[test]
     fn base64_matches_rfc4648() {
-        for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy"), ("è", "w6g=")] {
+        for (i, o) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+            ("è", "w6g="),
+        ] {
             assert_eq!(base64(i.as_bytes()), o);
         }
     }

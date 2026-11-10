@@ -16,7 +16,11 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         View::Editor => (Some(main), None),
         View::Preview => (None, Some(main)),
         View::Split => {
-            let dir = if app.side_by_side { Direction::Horizontal } else { Direction::Vertical };
+            let dir = if app.side_by_side {
+                Direction::Horizontal
+            } else {
+                Direction::Vertical
+            };
             let [a, b] = Layout::new(dir, [Constraint::Percentage(50); 2]).areas(main);
             (Some(a), Some(b))
         }
@@ -26,17 +30,26 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     app.preview_inner = None;
     app.links.clear();
     if let Some(area) = editor_area {
-        app.editor_inner = area.inner(Margin { vertical: 1, horizontal: 1 });
+        app.editor_inner = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
         app.editor_h = area.height.saturating_sub(2).max(1) as usize;
         app.editor_top = next_scroll_top(app.editor_top, cursor_row, app.editor_h);
-        app.editor_left = next_scroll_top(app.editor_left, app.editor.cursor().1, app.editor_inner.width.max(1) as usize);
+        app.editor_left = next_scroll_top(
+            app.editor_left,
+            app.editor.cursor().1,
+            app.editor_inner.width.max(1) as usize,
+        );
         f.render_widget(&app.editor, area);
         // sempre sul bordo destro dell'editor: nello split affiancato è il bordo in mezzo ai due riquadri
         scrollbar(f, area, app.editor.lines().len(), app.editor_top, app.editor_h);
     }
 
     if let Some(area) = preview_area {
-        let block = Block::default().borders(Borders::ALL).title(format!(" {} ", tr().preview));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", tr().preview));
         let inner = block.inner(area);
         app.preview_inner = Some(inner);
         f.render_widget(block, area);
@@ -53,9 +66,15 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             pad = target.saturating_sub(row);
             f.buffer_mut()[(area.x, inner.y + target as u16)].set_symbol("▶");
         } else {
-            app.preview_scroll = app.preview_scroll.min(pv.lines.len().saturating_sub(inner.height as usize));
+            app.preview_scroll = app
+                .preview_scroll
+                .min(pv.lines.len().saturating_sub(inner.height as usize));
         }
-        let content = Rect { y: inner.y + pad as u16, height: inner.height - pad as u16, ..inner };
+        let content = Rect {
+            y: inner.y + pad as u16,
+            height: inner.height - pad as u16,
+            ..inner
+        };
         let total = pv.lines.len();
         let (top, h) = (app.preview_scroll, content.height as usize);
         app.links = pv
@@ -67,7 +86,12 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                 (rect, l.dest.clone(), l.target.map(|t| (t, pv.row_for(t))))
             })
             .collect();
-        let lines = pv.lines.into_iter().skip(app.preview_scroll).take(content.height as usize).collect::<Vec<_>>();
+        let lines = pv
+            .lines
+            .into_iter()
+            .skip(app.preview_scroll)
+            .take(content.height as usize)
+            .collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
         // immagini sopra le righe riservate; di quelle tagliate dallo scorrimento si disegna solo la parte visibile
         for slot in &pv.images {
@@ -76,7 +100,12 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             if from >= to {
                 continue;
             }
-            let rect = Rect { x: content.x + slot.x, y: content.y + (from - top) as u16, width: slot.cols, height: (to - from) as u16 };
+            let rect = Rect {
+                x: content.x + slot.x,
+                y: content.y + (from - top) as u16,
+                width: slot.cols,
+                height: (to - from) as u16,
+            };
             if let Some(p) = app.images.protocol(slot, (from - first) as u16, (to - from) as u16) {
                 f.render_widget(Image::new(p), rect);
             }
@@ -109,7 +138,8 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         app.editor.lines().len(),
         if app.eol == "\r\n" { "CRLF" } else { "LF" }
     );
-    let [left, right] = Layout::horizontal([Constraint::Min(0), Constraint::Length(pos.chars().count() as u16)]).areas(status);
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(pos.chars().count() as u16)]).areas(status);
     let bar = Style::new().add_modifier(Modifier::REVERSED);
     f.render_widget(Paragraph::new(text).style(bar), left);
     f.render_widget(Paragraph::new(pos).style(bar), right);
@@ -118,10 +148,19 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 /// Scrollbar disegnata sopra il bordo destro di `area` (riquadro con bordi).
 fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
     // ratatui vuole il numero di posizioni di scorrimento: con `top` all'ultima la barra tocca il fondo
-    let mut state = ScrollbarState::new(total.saturating_sub(view) + 1).position(top).viewport_content_length(view);
+    let mut state = ScrollbarState::new(total.saturating_sub(view) + 1)
+        .position(top)
+        .viewport_content_length(view);
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
         .track_symbol(Some("│"));
-    f.render_stateful_widget(bar, area.inner(Margin { vertical: 1, horizontal: 0 }), &mut state);
+    f.render_stateful_widget(
+        bar,
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut state,
+    );
 }

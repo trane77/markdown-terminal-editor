@@ -29,7 +29,14 @@ pub(crate) struct Images {
 
 impl Images {
     pub(crate) fn new(picker: Picker, base: PathBuf) -> Self {
-        Images { picker, base, max_rows: 20, decoded: HashMap::new(), resized: HashMap::new(), protocols: HashMap::new() }
+        Images {
+            picker,
+            base,
+            max_rows: 20,
+            decoded: HashMap::new(),
+            resized: HashMap::new(),
+            protocols: HashMap::new(),
+        }
     }
 
     /// Celle (colonne, righe) occupate dall'immagine `dest` entro `width` colonne, rispettando le
@@ -39,7 +46,11 @@ impl Images {
             return None;
         }
         let path = self.base.join(dest);
-        let img = self.decoded.entry(path.clone()).or_insert_with(|| image::open(&path).ok()).as_ref()?;
+        let img = self
+            .decoded
+            .entry(path.clone())
+            .or_insert_with(|| image::open(&path).ok())
+            .as_ref()?;
         let (fw, fh) = self.picker.font_size();
         let (fw, fh, w, h) = (fw as f64, fh as f64, img.width() as f64, img.height() as f64);
         let mut cols = (w / fw).ceil().clamp(1.0, width as f64);
@@ -71,7 +82,10 @@ impl Images {
                 .entry((slot.path.clone(), slot.cols, slot.rows))
                 .or_insert_with(|| img.resize_exact(pw, ph, FilterType::Triangle));
             let part = full.crop_imm(0, skip as u32 * fh as u32, pw, take as u32 * fh as u32);
-            let proto = self.picker.new_protocol(part, Rect::new(0, 0, slot.cols, take), Resize::Fit(None)).ok()?;
+            let proto = self
+                .picker
+                .new_protocol(part, Rect::new(0, 0, slot.cols, take), Resize::Fit(None))
+                .ok()?;
             self.protocols.insert(key.clone(), proto);
         }
         self.protocols.get(&key)

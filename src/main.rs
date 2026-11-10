@@ -93,7 +93,11 @@ fn main() -> io::Result<()> {
         Err(e) => return Err(e),
     };
     let mut editor = TextArea::from(text.lines());
-    editor.set_block(Block::default().borders(Borders::ALL).title(format!(" {} ", tr().editor)));
+    editor.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", tr().editor)),
+    );
     editor.set_cursor_line_style(Style::default());
 
     let mut terminal = ratatui::init();
@@ -107,7 +111,10 @@ fn main() -> io::Result<()> {
     // chiede al terminale protocollo grafico (sixel, kitty, iTerm2) e dimensione dei caratteri;
     // senza risposta si ripiega sui mezzi blocchi colorati
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let base = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let base = Path::new(&path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let images = Images::new(picker, base.to_path_buf());
 
     let mut app = App {

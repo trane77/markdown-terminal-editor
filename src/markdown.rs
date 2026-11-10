@@ -50,22 +50,31 @@ fn slug(text: &str) -> String {
         .collect()
 }
 
-
 impl Preview {
     /// Riga d'anteprima che corrisponde alla riga `row` del sorgente: la prima con contenuto
     /// tra quelle provenienti dalla riga sorgente più vicina che non la supera.
     pub(crate) fn row_for(&self, row: usize) -> usize {
-        let Some(best) = self.src.iter().map(|s| s.0).filter(|&s| s <= row).max() else { return 0 };
+        let Some(best) = self.src.iter().map(|s| s.0).filter(|&s| s <= row).max() else {
+            return 0;
+        };
         let pos = self.src.iter().position(|&s| s == (best, true));
         pos.or_else(|| self.src.iter().position(|s| s.0 == best)).unwrap_or(0)
     }
 }
 
 pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>) -> Preview {
-    let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(src.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
     let line_of = |byte: usize| starts.partition_point(|&s| s <= byte) - 1;
-    let mut r = Renderer { width: width as usize, images, ..Renderer::default() };
-    for (ev, range) in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter() {
+    let mut r = Renderer {
+        width: width as usize,
+        images,
+        ..Renderer::default()
+    };
+    for (ev, range) in
+        Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter()
+    {
         r.line = line_of(range.start);
         // riga dopo l'ultima con contenuto: alcuni blocchi (liste) includono le righe vuote che li seguono
         let end = src[..range.end].trim_end().len();
@@ -79,10 +88,21 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
         .map(|(line, x, width, i)| {
             let dest = r.dests[i].clone();
             let target = r.anchors.get(&dest[1..].to_lowercase()).copied();
-            LinkHit { line, x, width, dest, target }
+            LinkHit {
+                line,
+                x,
+                width,
+                dest,
+                target,
+            }
         })
         .collect();
-    Preview { lines: r.lines, src: r.src, images: r.slots, links }
+    Preview {
+        lines: r.lines,
+        src: r.src,
+        images: r.slots,
+        links,
+    }
 }
 
 #[derive(Default)]
@@ -121,9 +141,13 @@ struct Renderer<'a> {
 
 fn heading_style(level: HeadingLevel) -> Style {
     match level {
-        HeadingLevel::H1 => Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        HeadingLevel::H1 => Style::new()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         HeadingLevel::H2 => Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        _ => Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        _ => Style::new()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     }
 }
 
@@ -166,12 +190,23 @@ fn wrap_words(text: &str, cap: usize) -> Option<Vec<String>> {
 /// `sx` = 1 o 2 in orizzontale). Usa solo blocchi di base, visibili in ogni terminale.
 fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
     use font8x8::{UnicodeFonts, BASIC_FONTS, LATIN_FONTS};
-    const QUAD: [char; 16] = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
+    const QUAD: [char; 16] = [
+        ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
+    ];
     let glyphs: Vec<[u8; 8]> = text
         .chars()
-        .map(|c| BASIC_FONTS.get(c).or_else(|| LATIN_FONTS.get(c)).unwrap_or(BASIC_FONTS.get('?').unwrap()))
+        .map(|c| {
+            BASIC_FONTS
+                .get(c)
+                .or_else(|| LATIN_FONTS.get(c))
+                .unwrap_or(BASIC_FONTS.get('?').unwrap())
+        })
         .collect();
-    let px = |x: usize, y: usize| font_rows[y].iter().fold(0, |acc, &r| acc | (glyphs[x / 8][r] >> (x % 8)) & 1);
+    let px = |x: usize, y: usize| {
+        font_rows[y]
+            .iter()
+            .fold(0, |acc, &r| acc | (glyphs[x / 8][r] >> (x % 8)) & 1)
+    };
     (0..font_rows.len() / 2)
         .map(|row| {
             (0..glyphs.len() * 8 / sx)
@@ -203,8 +238,10 @@ fn wrap(
     use unicode_width::UnicodeWidthChar;
     let cw = |c: char| c.width().unwrap_or(0);
     type Ch = (char, Style, usize, Option<usize>);
-    let chars: Vec<Ch> =
-        spans.iter().flat_map(|(s, src, link)| s.content.chars().map(move |c| (c, s.style, *src, *link))).collect();
+    let chars: Vec<Ch> = spans
+        .iter()
+        .flat_map(|(s, src, link)| s.content.chars().map(move |c| (c, s.style, *src, *link)))
+        .collect();
 
     let mut lines = Vec::new();
     let mut prefix = first;
@@ -243,7 +280,9 @@ fn wrap(
     let mut i = 0;
     while i < chars.len() {
         let space = chars[i].0 == ' ';
-        let j = (i..chars.len()).find(|&k| (chars[k].0 == ' ') != space).unwrap_or(chars.len());
+        let j = (i..chars.len())
+            .find(|&k| (chars[k].0 == ' ') != space)
+            .unwrap_or(chars.len());
         let token = &chars[i..j];
         i = j;
         if space {
@@ -301,7 +340,11 @@ impl Renderer<'_> {
             return;
         }
         let pad = Span::raw(" ".repeat(self.indent));
-        let first = if std::mem::take(&mut self.at_marker) { vec![self.bar()] } else { vec![self.bar(), pad.clone()] };
+        let first = if std::mem::take(&mut self.at_marker) {
+            vec![self.bar()]
+        } else {
+            vec![self.bar(), pad.clone()]
+        };
         let spans = std::mem::take(&mut self.spans);
         for (line, src, hits) in wrap(spans, self.width, first, vec![self.bar(), pad]) {
             let n = self.lines.len();
@@ -314,7 +357,11 @@ impl Renderer<'_> {
     fn blank(&mut self) {
         self.flush();
         if self.lines.last().is_some_and(|l| !l.spans.is_empty()) {
-            let sep = if self.quote > 0 { Line::from(self.bar()) } else { Line::default() };
+            let sep = if self.quote > 0 {
+                Line::from(self.bar())
+            } else {
+                Line::default()
+            };
             self.push_line(sep, self.end_line, false);
         }
     }
@@ -388,7 +435,10 @@ impl Renderer<'_> {
                         self.anchors.insert(anchor, self.line);
                         if let Some(rows) = big_heading(level, &text, width) {
                             self.spans.clear();
-                            let style = Style { fg: heading_style(level).fg, ..Style::default() };
+                            let style = Style {
+                                fg: heading_style(level).fg,
+                                ..Style::default()
+                            };
                             for r in rows {
                                 self.push_line(Line::styled(r, style), self.line, true);
                             }
@@ -401,7 +451,11 @@ impl Renderer<'_> {
                     self.styles.pop();
                     self.flush();
                     // toglie la riga di sola barra lasciata dall'ultimo paragrafo, poi separa a livello esterno
-                    if self.lines.last().is_some_and(|l| l.spans.len() == 1 && l.spans[0].content == self.bar().content) {
+                    if self
+                        .lines
+                        .last()
+                        .is_some_and(|l| l.spans.len() == 1 && l.spans[0].content == self.bar().content)
+                    {
                         self.lines.pop();
                         self.src.pop();
                     }
@@ -433,7 +487,13 @@ impl Renderer<'_> {
                             for _ in 0..rows {
                                 self.push_line(Line::from(self.bar()), self.line, true);
                             }
-                            self.slots.push(ImageSlot { line, x, cols, rows, path });
+                            self.slots.push(ImageSlot {
+                                line,
+                                x,
+                                cols,
+                                rows,
+                                path,
+                            });
                         }
                         None => {
                             let style = Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
@@ -455,7 +515,12 @@ impl Renderer<'_> {
                 let pad = || vec![Span::raw("  ")];
                 for (i, l) in t.lines().enumerate() {
                     let src = self.line + i;
-                    let rows = wrap(vec![(Span::styled(l.to_string(), code_style()), src, None)], self.width, pad(), pad());
+                    let rows = wrap(
+                        vec![(Span::styled(l.to_string(), code_style()), src, None)],
+                        self.width,
+                        pad(),
+                        pad(),
+                    );
                     if rows.is_empty() {
                         self.push_line(Line::from(pad()), src, true);
                     }
@@ -482,7 +547,11 @@ impl Renderer<'_> {
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.flush();
-                self.push_line(Line::styled("─".repeat(width), Style::new().fg(Color::DarkGray)), self.line, true);
+                self.push_line(
+                    Line::styled("─".repeat(width), Style::new().fg(Color::DarkGray)),
+                    self.line,
+                    true,
+                );
                 self.blank();
             }
             Event::TaskListMarker(done) => {
@@ -504,7 +573,6 @@ mod tests {
     use super::*;
     use ratatui_image::picker::Picker;
 
-
     fn plain(src: &str, width: u16) -> Vec<String> {
         render_markdown(src, width, None)
             .lines
@@ -519,8 +587,24 @@ mod tests {
         assert_eq!(
             plain(src, 40),
             [
-                "Titolo", "", "• a", "  ◦ b", "☑ fatto", "☐ da fare", "", "1. uno", "2. due", "", "│ cit", "",
-                "─".repeat(40).as_str(), "", "  x = 1", "  ", "  y", "",
+                "Titolo",
+                "",
+                "• a",
+                "  ◦ b",
+                "☑ fatto",
+                "☐ da fare",
+                "",
+                "1. uno",
+                "2. due",
+                "",
+                "│ cit",
+                "",
+                "─".repeat(40).as_str(),
+                "",
+                "  x = 1",
+                "  ",
+                "  y",
+                "",
             ]
         );
     }
@@ -528,9 +612,18 @@ mod tests {
     #[test]
     fn wraps_with_prefix() {
         // citazione: ogni riga a capo ripete la barra, i paragrafi restano uniti dalla barra
-        assert_eq!(plain("> uno due tre quattro\n", 12), ["│ uno due", "│ tre", "│ quattro", ""]);
-        assert_eq!(plain("> a\n>\n> b\n\nfuori\n", 40), ["│ a", "│ ", "│ b", "", "fuori", ""]);
-        assert_eq!(plain("> a\n>> b\n", 40), ["│ a", "│ ", "│ │ b", "", ""].map(String::from)[..4].to_vec());
+        assert_eq!(
+            plain("> uno due tre quattro\n", 12),
+            ["│ uno due", "│ tre", "│ quattro", ""]
+        );
+        assert_eq!(
+            plain("> a\n>\n> b\n\nfuori\n", 40),
+            ["│ a", "│ ", "│ b", "", "fuori", ""]
+        );
+        assert_eq!(
+            plain("> a\n>> b\n", 40),
+            ["│ a", "│ ", "│ │ b", "", ""].map(String::from)[..4].to_vec()
+        );
         // lista: la continuazione rientra sotto il testo, non sotto il punto
         assert_eq!(plain("- uno due tre\n- x\n", 9), ["• uno due", "  tre", "• x", ""]);
         // simbolo diverso per livello, sottovoci allineate al testo della voce madre
@@ -577,7 +670,14 @@ mod tests {
         let s = &pv.images[0];
         assert_eq!((s.line, s.x, s.cols, s.rows), (2, 0, 40, 10));
         assert_eq!(pv.row_for(2), 2);
-        assert_eq!(pv.lines[s.line + s.rows as usize + 1].spans.iter().map(|x| x.content.as_ref()).collect::<String>(), "dopo");
+        assert_eq!(
+            pv.lines[s.line + s.rows as usize + 1]
+                .spans
+                .iter()
+                .map(|x| x.content.as_ref())
+                .collect::<String>(),
+            "dopo"
+        );
         // immagine alta: limitata a max_rows, larghezza ridotta in proporzione (240x480 → 10 righe, 10 colonne)
         let pv = render_markdown("![s](img/strisce.jpg)", 40, Some(&mut im));
         assert_eq!((pv.images[0].cols, pv.images[0].rows), (10, 10));
@@ -595,17 +695,32 @@ mod tests {
     }
 
     fn plain_lines(pv: &Preview) -> Vec<String> {
-        pv.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+        pv.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
     }
 
     #[test]
     fn internal_links_point_to_headings() {
-        let pv = render_markdown("# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org)\n", 40, None);
-        let l: Vec<_> = pv.links.iter().map(|l| (l.x, l.width, l.dest.as_str(), l.target)).collect();
+        let pv = render_markdown(
+            "# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org)\n",
+            40,
+            None,
+        );
+        let l: Vec<_> = pv
+            .links
+            .iter()
+            .map(|l| (l.x, l.width, l.dest.as_str(), l.target))
+            .collect();
         assert_eq!(l, [(6, 3, "#due-tre", Some(2)), (12, 2, "#manca", None)]);
         // un link che va a capo è cliccabile su entrambe le righe
         let pv = render_markdown("# Titolo\n\n[uno due tre](#titolo)\n", 8, None);
-        let l: Vec<_> = pv.links.iter().map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target)).collect();
+        let l: Vec<_> = pv
+            .links
+            .iter()
+            .map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target))
+            .collect();
         assert_eq!(l, [(0, 0, 7, Some(0)), (1, 0, 3, Some(0))]);
     }
 

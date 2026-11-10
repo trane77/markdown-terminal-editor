@@ -130,7 +130,9 @@ fn lang(locale: &str) -> &'static Tr {
 pub(crate) fn tr() -> &'static Tr {
     static TR: OnceLock<&Tr> = OnceLock::new();
     TR.get_or_init(|| {
-        let var = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()));
+        let var = ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()));
         lang(&var.unwrap_or_default())
     })
 }
