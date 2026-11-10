@@ -11,7 +11,7 @@ use ratatui::{
         event::{DisableMouseCapture, EnableMouseCapture},
         execute,
     },
-    layout::Rect,
+    layout::{Position, Rect},
     style::Style,
     widgets::{Block, Borders},
 };
@@ -30,6 +30,17 @@ enum View {
     Split,
 }
 
+/// Pezzo di link cliccabile visibile nell'anteprima, in coordinate dello schermo.
+#[derive(Clone)]
+struct ScreenLink {
+    rect: Rect,
+    /// stesso id = stesso link (anche se va a capo)
+    id: usize,
+    dest: String,
+    /// link interni: (riga sorgente, riga d'anteprima) del titolo di destinazione
+    target: Option<(usize, usize)>,
+}
+
 struct App<'a> {
     path: String,
     editor: TextArea<'a>,
@@ -45,8 +56,11 @@ struct App<'a> {
     /// area del testo nell'editor e nell'anteprima nell'ultimo disegno, per il mouse
     editor_inner: Rect,
     preview_inner: Option<Rect>,
-    /// link interni visibili nell'anteprima: area sullo schermo, destinazione, (riga sorgente, riga d'anteprima) del titolo
-    links: Vec<(Rect, String, Option<(usize, usize)>)>,
+    links: Vec<ScreenLink>,
+    /// posizione del mouse, per evidenziare il link sotto il puntatore
+    hover: Option<Position>,
+    /// link esterno in attesa di conferma prima di aprirlo nel browser
+    confirm: Option<String>,
     /// selezione col mouse in corso (tasto sinistro premuto nell'editor)
     dragging: bool,
     images: Images,
@@ -129,6 +143,8 @@ fn main() -> io::Result<()> {
         editor_inner: Rect::default(),
         preview_inner: None,
         links: Vec::new(),
+        hover: None,
+        confirm: None,
         dragging: false,
         images,
         // ponytail: con a capo misti vince CRLF se ce n'è almeno uno

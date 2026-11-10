@@ -17,6 +17,10 @@ pub(crate) struct Tr {
     pub(crate) line: &'static str,
     pub(crate) image: &'static str,
     pub(crate) no_anchor: &'static str,
+    pub(crate) open_link: &'static str,
+    pub(crate) ok: &'static str,
+    pub(crate) cancel: &'static str,
+    pub(crate) open_error: &'static str,
 }
 
 const EN: Tr = Tr {
@@ -33,6 +37,10 @@ const EN: Tr = Tr {
     line: "Ln",
     image: "image",
     no_anchor: "Link target not found",
+    open_link: "Open this external link in the browser?",
+    ok: "OK",
+    cancel: "Cancel",
+    open_error: "Cannot open the browser",
 };
 
 const ES: Tr = Tr {
@@ -49,6 +57,10 @@ const ES: Tr = Tr {
     line: "Lín",
     image: "imagen",
     no_anchor: "Destino del enlace no encontrado",
+    open_link: "¿Abrir este enlace externo en el navegador?",
+    ok: "Aceptar",
+    cancel: "Cancelar",
+    open_error: "No se puede abrir el navegador",
 };
 
 const DE: Tr = Tr {
@@ -65,6 +77,10 @@ const DE: Tr = Tr {
     line: "Z",
     image: "Bild",
     no_anchor: "Linkziel nicht gefunden",
+    open_link: "Diesen externen Link im Browser öffnen?",
+    ok: "OK",
+    cancel: "Abbrechen",
+    open_error: "Browser kann nicht geöffnet werden",
 };
 
 const PT: Tr = Tr {
@@ -81,6 +97,10 @@ const PT: Tr = Tr {
     line: "Ln",
     image: "imagem",
     no_anchor: "Destino da ligação não encontrado",
+    open_link: "Abrir esta ligação externa no navegador?",
+    ok: "OK",
+    cancel: "Cancelar",
+    open_error: "Não é possível abrir o navegador",
 };
 
 const FR: Tr = Tr {
@@ -97,6 +117,10 @@ const FR: Tr = Tr {
     line: "Ln",
     image: "image",
     no_anchor: "Cible du lien introuvable",
+    open_link: "Ouvrir ce lien externe dans le navigateur ?",
+    ok: "OK",
+    cancel: "Annuler",
+    open_error: "Impossible d'ouvrir le navigateur",
 };
 
 const IT: Tr = Tr {
@@ -113,6 +137,10 @@ const IT: Tr = Tr {
     line: "Ln",
     image: "immagine",
     no_anchor: "Destinazione del link non trovata",
+    open_link: "Aprire il link esterno nel browser?",
+    ok: "OK",
+    cancel: "Annulla",
+    open_error: "Impossibile aprire il browser",
 };
 
 /// Lingua dal locale POSIX (LC_ALL > LC_MESSAGES > LANG, es. "de_DE.UTF-8"); inglese se assente o non tradotta.

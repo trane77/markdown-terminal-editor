@@ -2,13 +2,14 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    style::{Color, Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 use ratatui_image::Image;
 
-use crate::{i18n::tr, markdown::render_markdown, next_scroll_top, App, View};
+use crate::{i18n::tr, markdown::render_markdown, next_scroll_top, App, ScreenLink, View};
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
@@ -83,7 +84,12 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             .filter(|l| (top..top + h).contains(&l.line))
             .map(|l| {
                 let rect = Rect::new(content.x + l.x, content.y + (l.line - top) as u16, l.width, 1);
-                (rect, l.dest.clone(), l.target.map(|t| (t, pv.row_for(t))))
+                ScreenLink {
+                    rect,
+                    id: l.id,
+                    dest: l.dest.clone(),
+                    target: l.target.map(|t| (t, pv.row_for(t))),
+                }
             })
             .collect();
         let lines = pv
@@ -93,6 +99,17 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             .take(content.height as usize)
             .collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
+        // link sotto il mouse, in tutti i suoi pezzi: azzurro se interno, fucsia se apre il browser
+        if let Some(hl) = app.hover.and_then(|h| app.links.iter().find(|l| l.rect.contains(h))) {
+            let color = if hl.dest.starts_with('#') {
+                Color::LightBlue
+            } else {
+                Color::Magenta
+            };
+            for l in app.links.iter().filter(|l| l.id == hl.id) {
+                f.buffer_mut().set_style(l.rect, Style::new().fg(color));
+            }
+        }
         // immagini sopra le righe riservate; di quelle tagliate dallo scorrimento si disegna solo la parte visibile
         for slot in &pv.images {
             let (first, last) = (slot.line, slot.line + slot.rows as usize);
@@ -143,6 +160,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let bar = Style::new().add_modifier(Modifier::REVERSED);
     f.render_widget(Paragraph::new(text).style(bar), left);
     f.render_widget(Paragraph::new(pos).style(bar), right);
+    if let Some(url) = &app.confirm {
+        confirm_dialog(f, url);
+    }
 }
 
 /// Scrollbar disegnata sopra il bordo destro di `area` (riquadro con bordi).
@@ -163,4 +183,28 @@ fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
         }),
         &mut state,
     );
+}
+
+/// Riquadro centrato che chiede se aprire `url` nel browser.
+fn confirm_dialog(f: &mut Frame, url: &str) {
+    let t = tr();
+    let area = f.area();
+    let text = vec![
+        Line::from(t.open_link),
+        Line::default(),
+        Line::styled(url, Style::new().fg(Color::Magenta)),
+        Line::default(),
+        Line::from(format!("Enter {}   Esc {}", t.ok, t.cancel)).style(Style::new().add_modifier(Modifier::BOLD)),
+    ];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Link ")
+        .padding(Padding::horizontal(1));
+    let para = Paragraph::new(text).block(block).centered().wrap(Wrap { trim: false });
+    // altezza esatta dopo l'a capo di domanda e indirizzo, bordi compresi
+    let w = area.width.saturating_sub(4).min(70);
+    let h = (para.line_count(w) as u16).min(area.height);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    f.render_widget(Clear, rect);
+    f.render_widget(para, rect);
 }

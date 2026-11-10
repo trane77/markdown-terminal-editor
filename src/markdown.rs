@@ -27,14 +27,21 @@ pub(crate) struct Preview {
     pub(crate) links: Vec<LinkHit>,
 }
 
-/// Pezzo di link interno (`[testo](#titolo)`) su una riga d'anteprima; un link che va a capo ne ha più d'uno.
+/// Pezzo di link cliccabile su una riga d'anteprima: interno (`[testo](#titolo)`) o esterno (vedi
+/// `is_external`). Un link che va a capo ne ha più d'uno, con lo stesso `id`.
 pub(crate) struct LinkHit {
+    pub(crate) id: usize,
     pub(crate) line: usize,
     pub(crate) x: u16,
     pub(crate) width: u16,
     pub(crate) dest: String,
-    /// riga sorgente del titolo di destinazione, None se non esiste
+    /// link interni: riga sorgente del titolo di destinazione, None se non esiste
     pub(crate) target: Option<usize>,
+}
+
+/// Link da aprire nel browser. Altri schemi (file://, percorsi relativi) non sono cliccabili.
+pub(crate) fn is_external(dest: &str) -> bool {
+    ["http://", "https://", "mailto:"].iter().any(|p| dest.starts_with(p))
 }
 
 /// Ancora di un titolo come la genera GitHub: minuscole, spazi → '-', via la punteggiatura.
@@ -87,8 +94,11 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
         .into_iter()
         .map(|(line, x, width, i)| {
             let dest = r.dests[i].clone();
-            let target = r.anchors.get(&dest[1..].to_lowercase()).copied();
+            let target = dest
+                .strip_prefix('#')
+                .and_then(|a| r.anchors.get(&a.to_lowercase()).copied());
             LinkHit {
+                id: i,
                 line,
                 x,
                 width,
@@ -130,7 +140,7 @@ struct Renderer<'a> {
     quote: usize,
     in_code: bool,
     heading: Option<(HeadingLevel, String)>,
-    /// destinazioni dei link interni; `link` è quello in corso
+    /// destinazioni dei link cliccabili; `link` è quello in corso
     dests: Vec<String>,
     link: Option<usize>,
     /// pezzi di link sulle righe prodotte: (riga, colonna, larghezza, indice in `dests`)
@@ -225,6 +235,9 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
         .collect()
 }
 
+/// Pezzo di link interno su una riga prodotta da `wrap`: (colonna, larghezza, indice del link).
+type LinkSpan = (u16, u16, usize);
+
 /// A capo per parole entro `width`: la prima riga inizia con `first`, le successive con `cont`
 /// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
 /// Ogni riga prodotta porta la riga sorgente del suo primo carattere e i pezzi di link interni
@@ -234,7 +247,7 @@ fn wrap(
     width: usize,
     first: Vec<Span<'static>>,
     cont: Vec<Span<'static>>,
-) -> Vec<(Line<'static>, usize, Vec<(u16, u16, usize)>)> {
+) -> Vec<(Line<'static>, usize, Vec<LinkSpan>)> {
     use unicode_width::UnicodeWidthChar;
     let cw = |c: char| c.width().unwrap_or(0);
     type Ch = (char, Style, usize, Option<usize>);
@@ -255,7 +268,7 @@ fn wrap(
         let mut line = std::mem::replace(prefix, cont.clone());
         let plen = line.len();
         let mut col = line.iter().map(Span::width).sum::<usize>() as u16;
-        let mut hits: Vec<(u16, u16, usize)> = Vec::new();
+        let mut hits: Vec<LinkSpan> = Vec::new();
         for (c, style, _, link) in cur.drain(..) {
             let w = cw(c) as u16;
             if let Some(l) = link {
@@ -413,7 +426,7 @@ impl Renderer<'_> {
                 Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
                 Tag::Strikethrough => self.push_style(Style::new().add_modifier(Modifier::CROSSED_OUT)),
                 Tag::Link { dest_url, .. } => {
-                    if dest_url.starts_with('#') {
+                    if dest_url.starts_with('#') || is_external(&dest_url) {
                         self.dests.push(dest_url.to_string());
                         self.link = Some(self.dests.len() - 1);
                     }
@@ -702,10 +715,10 @@ mod tests {
     }
 
     #[test]
-    fn internal_links_point_to_headings() {
+    fn links_are_clickable() {
         let pv = render_markdown(
-            "# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org)\n",
-            40,
+            "# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org) o [file](a.md)\n",
+            60,
             None,
         );
         let l: Vec<_> = pv
@@ -713,15 +726,23 @@ mod tests {
             .iter()
             .map(|l| (l.x, l.width, l.dest.as_str(), l.target))
             .collect();
-        assert_eq!(l, [(6, 3, "#due-tre", Some(2)), (12, 2, "#manca", None)]);
+        // i percorsi relativi non sono cliccabili
+        assert_eq!(
+            l,
+            [
+                (6, 3, "#due-tre", Some(2)),
+                (12, 2, "#manca", None),
+                (17, 3, "http://x.org", None)
+            ]
+        );
         // un link che va a capo è cliccabile su entrambe le righe
         let pv = render_markdown("# Titolo\n\n[uno due tre](#titolo)\n", 8, None);
         let l: Vec<_> = pv
             .links
             .iter()
-            .map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target))
+            .map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target, l.id))
             .collect();
-        assert_eq!(l, [(0, 0, 7, Some(0)), (1, 0, 3, Some(0))]);
+        assert_eq!(l, [(0, 0, 7, Some(0), 0), (1, 0, 3, Some(0), 0)]);
     }
 
     #[test]

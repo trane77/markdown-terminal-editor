@@ -1,6 +1,10 @@
 //! Tastiera e mouse: comandi, selezione confinata all'editor, link interni, appunti.
 
-use std::io::{self, Write};
+use std::{
+    env,
+    io::{self, Write},
+    process::{Command, Stdio},
+};
 
 use ratatui::{
     crossterm::event::{
@@ -25,6 +29,15 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             _ => continue,
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        // finché il dialogo di conferma è aperto conta solo Enter (apri) o Esc (annulla)
+        if let Some(url) = app.confirm.take() {
+            match key.code {
+                KeyCode::Enter => open_url(app, &url),
+                KeyCode::Esc => {}
+                _ => app.confirm = Some(url),
+            }
             continue;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -89,6 +102,10 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
     let pos = Position::new(m.column, m.row);
     let r = app.editor_inner;
     let in_panes = r.contains(pos) || app.preview_inner.is_some_and(|p| p.contains(pos));
+    app.hover = Some(pos);
+    if app.confirm.is_some() {
+        return;
+    }
     match m.kind {
         // la rotellina sposta il cursore (o l'anteprima da sola): la vista dell'editor segue il cursore
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
@@ -107,8 +124,12 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) if app.preview_inner.is_some_and(|p| p.contains(pos)) => {
-            if let Some((_, dest, target)) = app.links.iter().find(|l| l.0.contains(pos)).cloned() {
-                follow_link(app, &dest, target);
+            if let Some(l) = app.links.iter().find(|l| l.rect.contains(pos)).cloned() {
+                if l.dest.starts_with('#') {
+                    follow_link(app, &l.dest, l.target);
+                } else {
+                    app.confirm = Some(l.dest);
+                }
             }
         }
         MouseEventKind::Down(MouseButton::Left) if app.view != View::Preview && r.contains(pos) => {
@@ -144,6 +165,29 @@ fn follow_link(app: &mut App, dest: &str, target: Option<(usize, usize)>) {
     app.editor
         .move_cursor(CursorMove::Jump(line.min(u16::MAX as usize) as u16, 0));
     app.preview_scroll = row;
+}
+
+/// Apre un link esterno nel browser predefinito, senza bloccare l'editor.
+fn open_url(app: &mut App, url: &str) {
+    // su WSL il browser è quello di Windows
+    let cmds: &[&str] = if env::var_os("WSL_DISTRO_NAME").is_some() {
+        &["wslview", "explorer.exe", "xdg-open"]
+    } else {
+        &["xdg-open"]
+    };
+    let child = cmds.iter().find_map(|c| {
+        let mut cmd = Command::new(c);
+        cmd.arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.spawn().ok()
+    });
+    match child {
+        // attende in un thread a parte, così il processo terminato non resta zombie
+        Some(mut c) => drop(std::thread::spawn(move || c.wait())),
+        None => app.status = format!("{}: {url}", tr().open_error),
+    }
 }
 
 /// Porta il cursore sotto il mouse. Fuori dall'editor si ferma al bordo: oltre quello in alto o in
