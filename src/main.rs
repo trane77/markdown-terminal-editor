@@ -3,13 +3,13 @@ use std::{env, fs, io};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     DefaultTerminal, Frame,
 };
-use tui_textarea::TextArea;
+use tui_textarea::{CursorMove, TextArea};
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -23,10 +23,25 @@ struct App<'a> {
     editor: TextArea<'a>,
     view: View,
     side_by_side: bool,
-    preview_scroll: u16,
+    preview_scroll: usize,
+    /// prima riga visibile e altezza dell'editor. tui-textarea non le espone: le ricalcoliamo con la
+    /// sua stessa regola (scorre il minimo per tenere visibile il cursore), vedi `next_scroll_top`
+    editor_top: usize,
+    editor_h: usize,
     dirty: bool,
     quit_armed: bool,
     status: String,
+}
+
+/// Stessa regola di tui-textarea: la vista si sposta solo quando il cursore esce dallo schermo.
+fn next_scroll_top(prev_top: usize, cursor: usize, len: usize) -> usize {
+    if cursor < prev_top {
+        cursor
+    } else if prev_top + len <= cursor {
+        cursor + 1 - len
+    } else {
+        prev_top
+    }
 }
 
 impl App<'_> {
@@ -63,6 +78,8 @@ fn main() -> io::Result<()> {
         view: View::Split,
         side_by_side: true,
         preview_scroll: 0,
+        editor_top: 0,
+        editor_h: 1,
         dirty: false,
         quit_armed: false,
         status: String::new(),
@@ -81,6 +98,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             continue;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         let is_quit = ctrl && key.code == KeyCode::Char('q');
         if !is_quit {
             app.quit_armed = false;
@@ -113,6 +131,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 KeyCode::Home => app.preview_scroll = 0,
                 _ => {}
             },
+            // tui-textarea farebbe scorrere la vista senza muovere il cursore, rendendo `editor_top`
+            // impossibile da ricalcolare: spostiamo invece il cursore di una pagina
+            (_, KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('v'))
+                if key.code != KeyCode::Char('v') || ctrl || alt =>
+            {
+                let down = key.code == KeyCode::PageDown || (key.code == KeyCode::Char('v') && ctrl);
+                for _ in 0..app.editor_h {
+                    app.editor.move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
+                }
+            }
             _ => {
                 if app.editor.input(key) {
                     app.dirty = true;
@@ -134,25 +162,34 @@ fn draw(f: &mut Frame, app: &mut App) {
         }
     };
 
+    let cursor_row = app.editor.cursor().0;
     if let Some(area) = editor_area {
+        app.editor_h = area.height.saturating_sub(2).max(1) as usize;
+        app.editor_top = next_scroll_top(app.editor_top, cursor_row, app.editor_h);
         f.render_widget(&app.editor, area);
     }
 
     if let Some(area) = preview_area {
-        let inner_w = area.width.saturating_sub(2);
-        let inner_h = area.height.saturating_sub(2) as usize;
-        // ponytail: ri-parsa tutto il documento a ogni frame; cache sul testo se diventa lento con file enormi
-        let para = Paragraph::new(render_markdown(&app.editor.lines().join("\n"), inner_w)).wrap(Wrap { trim: false });
-        let total = para.line_count(inner_w);
-        if app.view == View::Split {
-            // ponytail: sync proporzionale cursore→anteprima, approssimato; mappa sorgente→riga se serve precisione
-            let row = app.editor.cursor().0;
-            let n = app.editor.lines().len().max(1);
-            app.preview_scroll = (row * total / n).saturating_sub(inner_h / 2) as u16;
-        }
-        app.preview_scroll = app.preview_scroll.min(total.saturating_sub(inner_h) as u16);
         let block = Block::default().borders(Borders::ALL).title(" Anteprima ");
-        f.render_widget(para.block(block).scroll((app.preview_scroll, 0)), area);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        // ponytail: ri-parsa tutto il documento a ogni frame; cache sul testo se diventa lento con file enormi
+        let pv = render_markdown(&app.editor.lines().join("\n"), inner.width);
+        let mut pad = 0;
+        if app.view == View::Split {
+            // la riga d'anteprima della riga col cursore va alla stessa altezza dello schermo del cursore;
+            // se sopra non c'è abbastanza contenuto, si sposta l'anteprima in basso
+            let target = (cursor_row - app.editor_top).min((inner.height as usize).saturating_sub(1));
+            let row = pv.row_for(cursor_row);
+            app.preview_scroll = row.saturating_sub(target);
+            pad = target.saturating_sub(row);
+            f.buffer_mut()[(area.x, inner.y + target as u16)].set_symbol("▶");
+        } else {
+            app.preview_scroll = app.preview_scroll.min(pv.lines.len().saturating_sub(inner.height as usize));
+        }
+        let content = Rect { y: inner.y + pad as u16, height: inner.height - pad as u16, ..inner };
+        let lines = pv.lines.into_iter().skip(app.preview_scroll).take(content.height as usize).collect::<Vec<_>>();
+        f.render_widget(Paragraph::new(lines), content);
     }
 
     let view = match app.view {
@@ -177,19 +214,46 @@ fn code_style() -> Style {
     Style::new().fg(Color::Green)
 }
 
-fn render_markdown(src: &str, width: u16) -> Vec<Line<'static>> {
+struct Preview {
+    lines: Vec<Line<'static>>,
+    /// per ogni riga: riga del sorgente da cui proviene, e se ha contenuto (false = separatore)
+    src: Vec<(usize, bool)>,
+}
+
+impl Preview {
+    /// Riga d'anteprima che corrisponde alla riga `row` del sorgente: la prima con contenuto
+    /// tra quelle provenienti dalla riga sorgente più vicina che non la supera.
+    fn row_for(&self, row: usize) -> usize {
+        let Some(best) = self.src.iter().map(|s| s.0).filter(|&s| s <= row).max() else { return 0 };
+        let pos = self.src.iter().position(|&s| s == (best, true));
+        pos.or_else(|| self.src.iter().position(|s| s.0 == best)).unwrap_or(0)
+    }
+}
+
+fn render_markdown(src: &str, width: u16) -> Preview {
+    let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let line_of = |byte: usize| starts.partition_point(|&s| s <= byte) - 1;
     let mut r = Renderer { width: width as usize, ..Renderer::default() };
-    for ev in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS) {
+    for (ev, range) in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter() {
+        r.line = line_of(range.start);
+        // riga dopo l'ultima con contenuto: alcuni blocchi (liste) includono le righe vuote che li seguono
+        let end = src[..range.end].trim_end().len();
+        r.end_line = if end == 0 { 0 } else { line_of(end - 1) + 1 };
         r.event(ev);
     }
     r.flush();
-    r.lines
+    Preview { lines: r.lines, src: r.src }
 }
 
 #[derive(Default)]
 struct Renderer {
     lines: Vec<Line<'static>>,
-    spans: Vec<Span<'static>>,
+    src: Vec<(usize, bool)>,
+    /// righe del sorgente in cui iniziano/finiscono l'evento corrente
+    line: usize,
+    end_line: usize,
+    /// testo in attesa di andare a capo, con la riga sorgente di ogni pezzo
+    spans: Vec<(Span<'static>, usize)>,
     styles: Vec<Style>,
     width: usize,
     /// per ogni lista aperta: prossimo numero (None = puntata) e rientro del testo della voce corrente
@@ -276,22 +340,30 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
 
 /// A capo per parole entro `width`: la prima riga inizia con `first`, le successive con `cont`
 /// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
-fn wrap(spans: Vec<Span<'static>>, width: usize, first: Vec<Span<'static>>, cont: Vec<Span<'static>>) -> Vec<Line<'static>> {
+/// Ogni riga prodotta porta la riga sorgente del suo primo carattere.
+fn wrap(
+    spans: Vec<(Span<'static>, usize)>,
+    width: usize,
+    first: Vec<Span<'static>>,
+    cont: Vec<Span<'static>>,
+) -> Vec<(Line<'static>, usize)> {
     use unicode_width::UnicodeWidthChar;
     let cw = |c: char| c.width().unwrap_or(0);
-    let chars: Vec<(char, Style)> = spans.iter().flat_map(|s| s.content.chars().map(move |c| (c, s.style))).collect();
+    let chars: Vec<(char, Style, usize)> =
+        spans.iter().flat_map(|(s, src)| s.content.chars().map(move |c| (c, s.style, *src))).collect();
 
     let mut lines = Vec::new();
     let mut prefix = first;
-    let mut cur: Vec<(char, Style)> = Vec::new();
+    let mut cur: Vec<(char, Style, usize)> = Vec::new();
     let mut cur_w = 0;
-    let mut emit = |prefix: &mut Vec<Span<'static>>, cur: &mut Vec<(char, Style)>, cur_w: &mut usize| {
+    let mut emit = |prefix: &mut Vec<Span<'static>>, cur: &mut Vec<(char, Style, usize)>, cur_w: &mut usize| {
         while cur.last().is_some_and(|c| c.0 == ' ') {
             cur.pop();
         }
+        let src = cur.first().map_or(0, |c| c.2);
         let mut line = std::mem::replace(prefix, cont.clone());
         let plen = line.len();
-        for (c, style) in cur.drain(..) {
+        for (c, style, _) in cur.drain(..) {
             let n = line.len();
             match line.last_mut() {
                 Some(s) if s.style == style && n > plen => s.content.to_mut().push(c),
@@ -299,7 +371,7 @@ fn wrap(spans: Vec<Span<'static>>, width: usize, first: Vec<Span<'static>>, cont
             }
         }
         *cur_w = 0;
-        lines.push(Line::from(line));
+        lines.push((Line::from(line), src));
     };
 
     // gli spazi a inizio riga si tengono solo sulla prima (es. rientro del marcatore di lista annidata)
@@ -322,12 +394,12 @@ fn wrap(spans: Vec<Span<'static>>, width: usize, first: Vec<Span<'static>>, cont
             emit(&mut prefix, &mut cur, &mut cur_w);
             wrapped = true;
         }
-        for &(c, style) in token {
+        for &(c, style, src) in token {
             if !cur.is_empty() && cur_w + cw(c) > avail(&prefix) {
                 emit(&mut prefix, &mut cur, &mut cur_w);
                 wrapped = true;
             }
-            cur.push((c, style));
+            cur.push((c, style, src));
             cur_w += cw(c);
         }
     }
@@ -350,6 +422,15 @@ impl Renderer {
         Span::styled("│ ".repeat(self.quote), Style::new().fg(Color::DarkGray))
     }
 
+    fn push_line(&mut self, line: Line<'static>, src: usize, content: bool) {
+        self.lines.push(line);
+        self.src.push((src, content));
+    }
+
+    fn push_span(&mut self, span: Span<'static>) {
+        self.spans.push((span, self.line));
+    }
+
     fn flush(&mut self) {
         if self.spans.is_empty() {
             return;
@@ -357,7 +438,9 @@ impl Renderer {
         let pad = Span::raw(" ".repeat(self.indent));
         let first = if std::mem::take(&mut self.at_marker) { vec![self.bar()] } else { vec![self.bar(), pad.clone()] };
         let spans = std::mem::take(&mut self.spans);
-        self.lines.extend(wrap(spans, self.width, first, vec![self.bar(), pad]));
+        for (line, src) in wrap(spans, self.width, first, vec![self.bar(), pad]) {
+            self.push_line(line, src, true);
+        }
     }
 
     /// Riga vuota di separazione; dentro una citazione mantiene la barra, così la linea resta continua.
@@ -365,7 +448,7 @@ impl Renderer {
         self.flush();
         if self.lines.last().is_some_and(|l| !l.spans.is_empty()) {
             let sep = if self.quote > 0 { Line::from(self.bar()) } else { Line::default() };
-            self.lines.push(sep);
+            self.push_line(sep, self.end_line, false);
         }
     }
 
@@ -409,7 +492,7 @@ impl Renderer {
                         l.1 = self.indent;
                     }
                     self.at_marker = true;
-                    self.spans.push(marker);
+                    self.push_span(marker);
                 }
                 Tag::Emphasis => self.push_style(Style::new().add_modifier(Modifier::ITALIC)),
                 Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
@@ -424,7 +507,9 @@ impl Renderer {
                         if let Some(rows) = big_heading(level, &text, width) {
                             self.spans.clear();
                             let style = Style { fg: heading_style(level).fg, ..Style::default() };
-                            self.lines.extend(rows.into_iter().map(|r| Line::styled(r, style)));
+                            for r in rows {
+                                self.push_line(Line::styled(r, style), self.line, true);
+                            }
                         }
                     }
                     self.blank();
@@ -436,6 +521,7 @@ impl Renderer {
                     // toglie la riga di sola barra lasciata dall'ultimo paragrafo, poi separa a livello esterno
                     if self.lines.last().is_some_and(|l| l.spans.len() == 1 && l.spans[0].content == self.bar().content) {
                         self.lines.pop();
+                        self.src.pop();
                     }
                     self.quote -= 1;
                     self.blank();
@@ -459,28 +545,37 @@ impl Renderer {
                 _ => {}
             },
             Event::Text(t) if self.in_code => {
-                for l in t.lines() {
-                    self.lines.push(Line::from(Span::styled(format!("  {l}"), code_style())));
+                // ogni riga di codice va a capo da sé, rientrata, così anteprima e schermo restano 1:1
+                let pad = || vec![Span::raw("  ")];
+                for (i, l) in t.lines().enumerate() {
+                    let src = self.line + i;
+                    let rows = wrap(vec![(Span::styled(l.to_string(), code_style()), src)], self.width, pad(), pad());
+                    if rows.is_empty() {
+                        self.push_line(Line::from(pad()), src, true);
+                    }
+                    for (line, src) in rows {
+                        self.push_line(line, src, true);
+                    }
                 }
             }
             Event::Text(t) | Event::Code(t) if self.heading.is_some() => {
                 if let Some((_, h)) = &mut self.heading {
                     h.push_str(&t);
                 }
-                self.spans.push(Span::styled(t.into_string(), self.style()));
+                self.push_span(Span::styled(t.into_string(), self.style()));
             }
-            Event::Text(t) => self.spans.push(Span::styled(t.into_string(), self.style())),
-            Event::Code(t) => self.spans.push(Span::styled(t.into_string(), code_style())),
-            Event::Html(t) | Event::InlineHtml(t) => self.spans.push(Span::raw(t.trim_end().to_string())),
-            Event::SoftBreak => self.spans.push(Span::raw(" ")),
+            Event::Text(t) => self.push_span(Span::styled(t.into_string(), self.style())),
+            Event::Code(t) => self.push_span(Span::styled(t.into_string(), code_style())),
+            Event::Html(t) | Event::InlineHtml(t) => self.push_span(Span::raw(t.trim_end().to_string())),
+            Event::SoftBreak => self.push_span(Span::raw(" ")),
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.flush();
-                self.lines.push(Line::styled("─".repeat(width as usize), Style::new().fg(Color::DarkGray)));
+                self.push_line(Line::styled("─".repeat(width), Style::new().fg(Color::DarkGray)), self.line, true);
                 self.blank();
             }
             Event::TaskListMarker(done) => {
-                if let Some(s) = self.spans.last_mut() {
+                if let Some((s, _)) = self.spans.last_mut() {
                     let bullet = BULLETS.iter().find(|b| s.content.ends_with(*b));
                     if let Some(b) = bullet {
                         let indent = &s.content[..s.content.len() - b.len()];
@@ -499,6 +594,7 @@ mod tests {
 
     fn plain(src: &str, width: u16) -> Vec<String> {
         render_markdown(src, width)
+            .lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -540,6 +636,24 @@ mod tests {
     }
 
     #[test]
+    fn source_rows_map_to_preview_rows() {
+        let src = "# Ab\ntesto\n\n- a\n- b\n\n```\nx\n```\n\n> q1\n> q2\nfine";
+        let pv = render_markdown(src, 40);
+        let text = |i: usize| pv.lines[i].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        // titolo grande: la sua riga sorgente punta alla prima delle 4 righe a blocchi
+        assert_eq!(pv.row_for(0), 0);
+        assert_eq!(text(pv.row_for(1)), "testo");
+        assert_eq!(text(pv.row_for(2)), "");
+        assert_eq!(text(pv.row_for(3)), "• a");
+        assert_eq!(text(pv.row_for(4)), "• b");
+        assert_eq!(text(pv.row_for(5)), "");
+        assert_eq!(text(pv.row_for(7)), "  x");
+        // righe unite nello stesso paragrafo puntano alla riga che le contiene
+        assert_eq!(text(pv.row_for(11)), "│ q1 q2 fine");
+        assert_eq!(pv.row_for(12), pv.row_for(10));
+    }
+
+    #[test]
     fn big_headings() {
         // H1 largo: 8 celle per lettera, 4 righe
         let out = plain("# Ab\n", 80);
@@ -547,7 +661,7 @@ mod tests {
         assert!(out[..4].iter().all(|r| r.chars().count() == 16));
         assert!(out[0].contains('█') || out[0].contains('▀') || out[0].contains('▄'));
         // H1 in spazio stretto → versione compatta da 4 celle
-        let out = render_markdown("# Abcdef\n", 30);
+        let out = render_markdown("# Abcdef\n", 30).lines;
         assert_eq!(out[0].spans[0].content.chars().count(), 24);
         // H2 compatto, H3 testo normale
         let out = plain("## Ab\n", 80);
