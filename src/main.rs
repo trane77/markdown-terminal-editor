@@ -175,9 +175,9 @@ fn code_style() -> Style {
 }
 
 fn render_markdown(src: &str, width: u16) -> Vec<Line<'static>> {
-    let mut r = Renderer::default();
+    let mut r = Renderer { width: width as usize, ..Renderer::default() };
     for ev in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS) {
-        r.event(ev, width);
+        r.event(ev);
     }
     r.flush();
     r.lines
@@ -188,7 +188,13 @@ struct Renderer {
     lines: Vec<Line<'static>>,
     spans: Vec<Span<'static>>,
     styles: Vec<Style>,
-    lists: Vec<Option<u64>>,
+    width: usize,
+    /// per ogni lista aperta: prossimo numero (None = puntata) e rientro del testo della voce corrente
+    lists: Vec<(Option<u64>, usize)>,
+    /// rientro delle righe che proseguono la voce di lista corrente
+    indent: usize,
+    /// la riga in costruzione inizia con il marcatore di lista, che fa già da rientro
+    at_marker: bool,
     quote: usize,
     in_code: bool,
     heading: Option<(HeadingLevel, String)>,
@@ -204,7 +210,7 @@ fn heading_style(level: HeadingLevel) -> Style {
 
 /// Titolo in lettere a blocchi: H1 alto 4 righe, largo 8 celle per lettera o, se non ci sta, 4;
 /// H2 alto 4 righe e largo 4. Max 2 righe di testo grande, altrimenti None → titolo normale.
-fn big_heading(level: HeadingLevel, text: &str, width: u16) -> Option<Vec<String>> {
+fn big_heading(level: HeadingLevel, text: &str, width: usize) -> Option<Vec<String>> {
     // righe del font 8x8 per ogni riga di pixel
     const FULL: &[&[usize]] = &[&[0], &[1], &[2], &[3], &[4], &[5], &[6], &[7]];
     // (pixel per cella in orizzontale, righe del font)
@@ -214,7 +220,7 @@ fn big_heading(level: HeadingLevel, text: &str, width: u16) -> Option<Vec<String
         _ => &[],
     };
     scales.iter().find_map(|&(sx, font_rows)| {
-        let rows = wrap_words(text, width as usize * sx / 8)?;
+        let rows = wrap_words(text, width * sx / 8)?;
         (rows.len() <= 2).then(|| rows.iter().flat_map(|r| big_text(r, sx, font_rows)).collect())
     })
 }
@@ -265,6 +271,69 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
         .collect()
 }
 
+/// A capo per parole entro `width`: la prima riga inizia con `first`, le successive con `cont`
+/// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
+fn wrap(spans: Vec<Span<'static>>, width: usize, first: Vec<Span<'static>>, cont: Vec<Span<'static>>) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let cw = |c: char| c.width().unwrap_or(0);
+    let chars: Vec<(char, Style)> = spans.iter().flat_map(|s| s.content.chars().map(move |c| (c, s.style))).collect();
+
+    let mut lines = Vec::new();
+    let mut prefix = first;
+    let mut cur: Vec<(char, Style)> = Vec::new();
+    let mut cur_w = 0;
+    let mut emit = |prefix: &mut Vec<Span<'static>>, cur: &mut Vec<(char, Style)>, cur_w: &mut usize| {
+        while cur.last().is_some_and(|c| c.0 == ' ') {
+            cur.pop();
+        }
+        let mut line = std::mem::replace(prefix, cont.clone());
+        let plen = line.len();
+        for (c, style) in cur.drain(..) {
+            let n = line.len();
+            match line.last_mut() {
+                Some(s) if s.style == style && n > plen => s.content.to_mut().push(c),
+                _ => line.push(Span::styled(c.to_string(), style)),
+            }
+        }
+        *cur_w = 0;
+        lines.push(Line::from(line));
+    };
+
+    // gli spazi a inizio riga si tengono solo sulla prima (es. rientro del marcatore di lista annidata)
+    let mut wrapped = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let space = chars[i].0 == ' ';
+        let j = (i..chars.len()).find(|&k| (chars[k].0 == ' ') != space).unwrap_or(chars.len());
+        let token = &chars[i..j];
+        i = j;
+        if space {
+            if !cur.is_empty() || !wrapped {
+                cur.extend_from_slice(token);
+                cur_w += token.len();
+            }
+            continue;
+        }
+        let avail = |p: &Vec<Span>| width.saturating_sub(p.iter().map(Span::width).sum()).max(1);
+        if !cur.is_empty() && cur_w + token.iter().map(|c| cw(c.0)).sum::<usize>() > avail(&prefix) {
+            emit(&mut prefix, &mut cur, &mut cur_w);
+            wrapped = true;
+        }
+        for &(c, style) in token {
+            if !cur.is_empty() && cur_w + cw(c) > avail(&prefix) {
+                emit(&mut prefix, &mut cur, &mut cur_w);
+                wrapped = true;
+            }
+            cur.push((c, style));
+            cur_w += cw(c);
+        }
+    }
+    if !cur.is_empty() {
+        emit(&mut prefix, &mut cur, &mut cur_w);
+    }
+    lines
+}
+
 impl Renderer {
     fn style(&self) -> Style {
         self.styles.last().copied().unwrap_or_default()
@@ -274,26 +343,31 @@ impl Renderer {
         self.styles.push(self.style().patch(s));
     }
 
+    fn bar(&self) -> Span<'static> {
+        Span::styled("│ ".repeat(self.quote), Style::new().fg(Color::DarkGray))
+    }
+
     fn flush(&mut self) {
         if self.spans.is_empty() {
             return;
         }
-        let mut line = Vec::new();
-        if self.quote > 0 {
-            line.push(Span::styled("│ ".repeat(self.quote), Style::new().fg(Color::DarkGray)));
-        }
-        line.append(&mut self.spans);
-        self.lines.push(Line::from(line));
+        let pad = Span::raw(" ".repeat(self.indent));
+        let first = if std::mem::take(&mut self.at_marker) { vec![self.bar()] } else { vec![self.bar(), pad.clone()] };
+        let spans = std::mem::take(&mut self.spans);
+        self.lines.extend(wrap(spans, self.width, first, vec![self.bar(), pad]));
     }
 
+    /// Riga vuota di separazione; dentro una citazione mantiene la barra, così la linea resta continua.
     fn blank(&mut self) {
         self.flush();
         if self.lines.last().is_some_and(|l| !l.spans.is_empty()) {
-            self.lines.push(Line::default());
+            let sep = if self.quote > 0 { Line::from(self.bar()) } else { Line::default() };
+            self.lines.push(sep);
         }
     }
 
-    fn event(&mut self, ev: Event, width: u16) {
+    fn event(&mut self, ev: Event) {
+        let width = self.width;
         match ev {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => {
@@ -312,19 +386,25 @@ impl Renderer {
                 }
                 Tag::List(start) => {
                     self.flush();
-                    self.lists.push(start);
+                    self.lists.push((start, 0));
                 }
                 Tag::Item => {
                     self.flush();
                     let indent = "  ".repeat(self.lists.len().saturating_sub(1));
                     let marker = match self.lists.last_mut() {
-                        Some(Some(n)) => {
+                        Some((Some(n), _)) => {
                             *n += 1;
                             format!("{}. ", *n - 1)
                         }
                         _ => "• ".into(),
                     };
-                    self.spans.push(Span::styled(format!("{indent}{marker}"), Style::new().fg(Color::Yellow)));
+                    let marker = Span::styled(format!("{indent}{marker}"), Style::new().fg(Color::Yellow));
+                    self.indent = marker.width();
+                    if let Some(l) = self.lists.last_mut() {
+                        l.1 = self.indent;
+                    }
+                    self.at_marker = true;
+                    self.spans.push(marker);
                 }
                 Tag::Emphasis => self.push_style(Style::new().add_modifier(Modifier::ITALIC)),
                 Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
@@ -347,8 +427,13 @@ impl Renderer {
                 TagEnd::Paragraph => self.blank(),
                 TagEnd::BlockQuote(_) => {
                     self.styles.pop();
-                    self.blank();
+                    self.flush();
+                    // toglie la riga di sola barra lasciata dall'ultimo paragrafo, poi separa a livello esterno
+                    if self.lines.last().is_some_and(|l| l.spans.len() == 1 && l.spans[0].content == self.bar().content) {
+                        self.lines.pop();
+                    }
                     self.quote -= 1;
+                    self.blank();
                 }
                 TagEnd::CodeBlock => {
                     self.in_code = false;
@@ -357,6 +442,7 @@ impl Renderer {
                 TagEnd::List(_) => {
                     self.flush();
                     self.lists.pop();
+                    self.indent = self.lists.last().map_or(0, |l| l.1);
                     if self.lists.is_empty() {
                         self.blank();
                     }
@@ -411,14 +497,26 @@ mod tests {
 
     #[test]
     fn renders_basic_elements() {
-        let src = "# Titolo\n\n- a\n  - b\n- [x] fatto\n- [ ] da fare\n\n1. uno\n2. due\n\n> cit\n\n---\n\n```\nx = 1\n\ny\n```\n";
+        let src = "### Titolo\n\n- a\n  - b\n- [x] fatto\n- [ ] da fare\n\n1. uno\n2. due\n\n> cit\n\n---\n\n```\nx = 1\n\ny\n```\n";
         assert_eq!(
-            plain(src, 3),
+            plain(src, 40),
             [
                 "Titolo", "", "• a", "  • b", "☑ fatto", "☐ da fare", "", "1. uno", "2. due", "", "│ cit", "",
-                "───", "", "  x = 1", "  ", "  y", "",
+                "─".repeat(40).as_str(), "", "  x = 1", "  ", "  y", "",
             ]
         );
+    }
+
+    #[test]
+    fn wraps_with_prefix() {
+        // citazione: ogni riga a capo ripete la barra, i paragrafi restano uniti dalla barra
+        assert_eq!(plain("> uno due tre quattro\n", 12), ["│ uno due", "│ tre", "│ quattro", ""]);
+        assert_eq!(plain("> a\n>\n> b\n\nfuori\n", 40), ["│ a", "│ ", "│ b", "", "fuori", ""]);
+        assert_eq!(plain("> a\n>> b\n", 40), ["│ a", "│ ", "│ │ b", "", ""].map(String::from)[..4].to_vec());
+        // lista: la continuazione rientra sotto il testo, non sotto il punto
+        assert_eq!(plain("- uno due tre\n- x\n", 9), ["• uno due", "  tre", "• x", ""]);
+        // parola più lunga della riga: spezzata
+        assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
     }
 
     #[test]
@@ -437,6 +535,6 @@ mod tests {
         assert_eq!(out[0].chars().count(), 8);
         assert_eq!(plain("### Ab\n", 80), ["Ab", ""]);
         // titolo che non entra nemmeno compatto → testo normale
-        assert_eq!(render_markdown("# Titolo\n", 3)[0].spans[0].content, "Titolo");
+        assert_eq!(plain("# Titolo\n", 7)[0], "Titolo");
     }
 }
