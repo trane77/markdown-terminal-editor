@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    env, fs, io,
+    env, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -8,8 +9,14 @@ use image::{imageops::FilterType, DynamicImage};
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
-    crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers},
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    crossterm::{
+        event::{
+            self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers,
+            MouseButton, MouseEvent, MouseEventKind,
+        },
+        execute,
+    },
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -35,7 +42,16 @@ struct App<'a> {
     /// sua stessa regola (scorre il minimo per tenere visibile il cursore), vedi `next_scroll_top`
     editor_top: usize,
     editor_h: usize,
+    /// prima colonna visibile (scorrimento orizzontale delle righe lunghe), stessa regola di `editor_top`
+    editor_left: usize,
+    /// area del testo nell'editor e nell'anteprima nell'ultimo disegno, per il mouse
+    editor_inner: Rect,
+    preview_inner: Option<Rect>,
+    /// selezione col mouse in corso (tasto sinistro premuto nell'editor)
+    dragging: bool,
     images: Images,
+    /// a capo del file: "\r\n" (CRLF, Windows) o "\n" (LF); mantenuto al salvataggio
+    eol: &'static str,
     dirty: bool,
     quit_armed: bool,
     status: String,
@@ -54,8 +70,8 @@ fn next_scroll_top(prev_top: usize, cursor: usize, len: usize) -> usize {
 
 impl App<'_> {
     fn save(&mut self) {
-        let mut text = self.editor.lines().join("\n");
-        text.push('\n');
+        let mut text = self.editor.lines().join(self.eol);
+        text.push_str(self.eol);
         match fs::write(&self.path, text) {
             Ok(()) => {
                 self.dirty = false;
@@ -81,6 +97,13 @@ fn main() -> io::Result<()> {
     editor.set_cursor_line_style(Style::default());
 
     let mut terminal = ratatui::init();
+    // il mouse lo gestiamo noi: così la selezione resta dentro l'editor invece di attraversare lo schermo
+    execute!(io::stdout(), EnableMouseCapture)?;
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
     // chiede al terminale protocollo grafico (sixel, kitty, iTerm2) e dimensione dei caratteri;
     // senza risposta si ripiega sui mezzi blocchi colorati
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
@@ -95,12 +118,19 @@ fn main() -> io::Result<()> {
         preview_scroll: 0,
         editor_top: 0,
         editor_h: 1,
+        editor_left: 0,
+        editor_inner: Rect::default(),
+        preview_inner: None,
+        dragging: false,
         images,
+        // ponytail: con a capo misti vince CRLF se ce n'è almeno uno
+        eol: if text.contains("\r\n") { "\r\n" } else { "\n" },
         dirty: false,
         quit_armed: false,
         status: String::new(),
     };
     let res = run(&mut terminal, &mut app);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
 }
@@ -108,7 +138,14 @@ fn main() -> io::Result<()> {
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|f| draw(f, app))?;
-        let TermEvent::Key(key) = event::read()? else { continue };
+        let key = match event::read()? {
+            TermEvent::Key(key) => key,
+            TermEvent::Mouse(m) => {
+                on_mouse(app, m);
+                continue;
+            }
+            _ => continue,
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -160,9 +197,85 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 if app.editor.input(key) {
                     app.dirty = true;
                 }
+                // Ctrl+C / Ctrl+X: oltre agli appunti interni dell'editor, anche quelli di sistema
+                if ctrl && matches!(key.code, KeyCode::Char('c' | 'x')) {
+                    copy_to_clipboard(&app.editor.yank_text());
+                }
             }
         }
     }
+}
+
+fn on_mouse(app: &mut App, m: MouseEvent) {
+    let pos = Position::new(m.column, m.row);
+    let r = app.editor_inner;
+    let in_panes = r.contains(pos) || app.preview_inner.is_some_and(|p| p.contains(pos));
+    match m.kind {
+        // la rotellina sposta il cursore (o l'anteprima da sola): la vista dell'editor segue il cursore
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let down = m.kind == MouseEventKind::ScrollDown;
+            if app.view == View::Preview {
+                app.preview_scroll = if down { app.preview_scroll + 3 } else { app.preview_scroll.saturating_sub(3) };
+            } else if in_panes {
+                for _ in 0..3 {
+                    app.editor.move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) if app.view != View::Preview && r.contains(pos) => {
+            app.editor.cancel_selection();
+            jump_to(app, pos);
+            app.editor.start_selection();
+            app.dragging = true;
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.dragging => jump_to(app, pos),
+        MouseEventKind::Up(MouseButton::Left) if app.dragging => {
+            app.dragging = false;
+            // semplice clic: nessuna selezione
+            if app.editor.selection_range().is_some_and(|(a, b)| a == b) {
+                app.editor.cancel_selection();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Porta il cursore sotto il mouse. Fuori dall'editor si ferma al bordo: oltre quello in alto o in
+/// basso va una riga più in là, così trascinando fuori la vista scorre.
+fn jump_to(app: &mut App, pos: Position) {
+    let r = app.editor_inner;
+    let row = if pos.y < r.y {
+        app.editor_top.saturating_sub(1)
+    } else if pos.y >= r.bottom() {
+        app.editor_top + r.height as usize
+    } else {
+        app.editor_top + (pos.y - r.y) as usize
+    };
+    let col = app.editor_left + pos.x.clamp(r.x, r.right().saturating_sub(1)).saturating_sub(r.x) as usize;
+    app.editor.move_cursor(CursorMove::Jump(row.min(u16::MAX as usize) as u16, col.min(u16::MAX as usize) as u16));
+}
+
+/// Copia negli appunti di sistema con la sequenza OSC 52 (Windows Terminal, kitty, WezTerm, iTerm2, ...).
+fn copy_to_clipboard(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let mut out = io::stdout();
+    let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let _ = out.flush();
+}
+
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
@@ -178,9 +291,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     };
 
     let cursor_row = app.editor.cursor().0;
+    app.preview_inner = None;
     if let Some(area) = editor_area {
+        app.editor_inner = area.inner(Margin { vertical: 1, horizontal: 1 });
         app.editor_h = area.height.saturating_sub(2).max(1) as usize;
         app.editor_top = next_scroll_top(app.editor_top, cursor_row, app.editor_h);
+        app.editor_left = next_scroll_top(app.editor_left, app.editor.cursor().1, app.editor_inner.width.max(1) as usize);
         f.render_widget(&app.editor, area);
         // sempre sul bordo destro dell'editor: nello split affiancato è il bordo in mezzo ai due riquadri
         scrollbar(f, area, app.editor.lines().len(), app.editor_top, app.editor_h);
@@ -189,6 +305,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     if let Some(area) = preview_area {
         let block = Block::default().borders(Borders::ALL).title(" Anteprima ");
         let inner = block.inner(area);
+        app.preview_inner = Some(inner);
         f.render_widget(block, area);
         // ponytail: ri-parsa tutto il documento a ogni frame; cache sul testo se diventa lento con file enormi
         app.images.max_rows = (inner.height / 2).max(3);
@@ -241,7 +358,16 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.images.picker.protocol_type(),
         app.status
     );
-    f.render_widget(Paragraph::new(text).style(Style::new().add_modifier(Modifier::REVERSED)), status);
+    let pos = format!(
+        " Ln {}/{} · {} ",
+        cursor_row + 1,
+        app.editor.lines().len(),
+        if app.eol == "\r\n" { "CRLF" } else { "LF" }
+    );
+    let [left, right] = Layout::horizontal([Constraint::Min(0), Constraint::Length(pos.chars().count() as u16)]).areas(status);
+    let bar = Style::new().add_modifier(Modifier::REVERSED);
+    f.render_widget(Paragraph::new(text).style(bar), left);
+    f.render_widget(Paragraph::new(pos).style(bar), right);
 }
 
 /// Scrollbar disegnata sopra il bordo destro di `area` (riquadro con bordi).
@@ -835,6 +961,13 @@ mod tests {
 
     fn plain_lines(pv: &Preview) -> Vec<String> {
         pv.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    #[test]
+    fn base64_matches_rfc4648() {
+        for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy"), ("è", "w6g=")] {
+            assert_eq!(base64(i.as_bytes()), o);
+        }
     }
 
     #[test]
