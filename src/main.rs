@@ -170,6 +170,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(text).style(Style::new().add_modifier(Modifier::REVERSED)), status);
 }
 
+/// Simbolo delle liste puntate per livello di annidamento (dal 4° livello si ricomincia).
+const BULLETS: [&str; 3] = ["• ", "◦ ", "⊙ "];
+
 fn code_style() -> Style {
     Style::new().fg(Color::Green)
 }
@@ -390,13 +393,15 @@ impl Renderer {
                 }
                 Tag::Item => {
                     self.flush();
-                    let indent = "  ".repeat(self.lists.len().saturating_sub(1));
+                    // le sottovoci si allineano al testo della voce madre
+                    let depth = self.lists.len().saturating_sub(1);
+                    let indent = " ".repeat(self.lists.iter().rev().nth(1).map_or(0, |l| l.1));
                     let marker = match self.lists.last_mut() {
                         Some((Some(n), _)) => {
                             *n += 1;
                             format!("{}. ", *n - 1)
                         }
-                        _ => "• ".into(),
+                        _ => BULLETS[depth % BULLETS.len()].into(),
                     };
                     let marker = Span::styled(format!("{indent}{marker}"), Style::new().fg(Color::Yellow));
                     self.indent = marker.width();
@@ -476,7 +481,11 @@ impl Renderer {
             }
             Event::TaskListMarker(done) => {
                 if let Some(s) = self.spans.last_mut() {
-                    s.content = s.content.replace("• ", if done { "☑ " } else { "☐ " }).into();
+                    let bullet = BULLETS.iter().find(|b| s.content.ends_with(*b));
+                    if let Some(b) = bullet {
+                        let indent = &s.content[..s.content.len() - b.len()];
+                        s.content = format!("{indent}{}", if done { "☑ " } else { "☐ " }).into();
+                    }
                 }
             }
             _ => {}
@@ -501,7 +510,7 @@ mod tests {
         assert_eq!(
             plain(src, 40),
             [
-                "Titolo", "", "• a", "  • b", "☑ fatto", "☐ da fare", "", "1. uno", "2. due", "", "│ cit", "",
+                "Titolo", "", "• a", "  ◦ b", "☑ fatto", "☐ da fare", "", "1. uno", "2. due", "", "│ cit", "",
                 "─".repeat(40).as_str(), "", "  x = 1", "  ", "  y", "",
             ]
         );
@@ -515,6 +524,17 @@ mod tests {
         assert_eq!(plain("> a\n>> b\n", 40), ["│ a", "│ ", "│ │ b", "", ""].map(String::from)[..4].to_vec());
         // lista: la continuazione rientra sotto il testo, non sotto il punto
         assert_eq!(plain("- uno due tre\n- x\n", 9), ["• uno due", "  tre", "• x", ""]);
+        // simbolo diverso per livello, sottovoci allineate al testo della voce madre
+        assert_eq!(
+            plain("* a\n   * b\n      * c\n         * d\n", 40),
+            ["• a", "  ◦ b", "    ⊙ c", "      • d", ""]
+        );
+        // numerazione da 1 a ogni livello, sottovoci sotto il testo di "2. "
+        assert_eq!(
+            plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n", 40),
+            ["1. a", "2. b", "   1. c", "   2. d", "      1. e", ""]
+        );
+        assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑ b", ""]);
         // parola più lunga della riga: spezzata
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
     }
