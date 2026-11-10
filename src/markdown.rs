@@ -1,11 +1,19 @@
 //! Markdown → righe d'anteprima: a capo, liste, citazioni, titoli grandi, immagini, link.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
+};
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{FontStyle, Theme, ThemeSet},
+    parsing::SyntaxSet,
 };
 
 use crate::{
@@ -17,6 +25,102 @@ const BULLETS: [&str; 3] = ["• ", "◦ ", "⊙ "];
 
 fn code_style() -> Style {
     Style::new().fg(Color::Green)
+}
+
+/// Grammatiche e tema dei blocchi di codice, caricati alla prima occorrenza.
+fn syntaxes() -> &'static (SyntaxSet, Theme) {
+    static S: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
+    S.get_or_init(|| {
+        let theme = ThemeSet::load_defaults()
+            .themes
+            .remove("base16-eighties.dark")
+            .unwrap_or_default();
+        (two_face::syntax::extra_newlines(), theme)
+    })
+}
+
+/// Sfondo dei blocchi di codice: quello del tema, un grigio scuro un po' più chiaro del terminale.
+fn code_bg() -> Color {
+    let c = syntaxes()
+        .1
+        .settings
+        .background
+        .unwrap_or(syntect::highlighting::Color {
+            r: 45,
+            g: 45,
+            b: 45,
+            a: 255,
+        });
+    Color::Rgb(c.r, c.g, c.b)
+}
+
+/// Righe di codice colorate per `lang` (nome o estensione, es. "rust", "py"); testo semplice se sconosciuto.
+fn highlight(lang: &str, code: &str) -> Vec<Vec<Span<'static>>> {
+    // l'anteprima si ricalcola a ogni disegno: si rievidenzia solo il codice cambiato
+    // ponytail: svuota tutto oltre una soglia; un LRU se i documenti hanno centinaia di blocchi
+    type Cache = HashMap<(String, String), Vec<Vec<Span<'static>>>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let key = (lang.to_string(), code.to_string());
+    if let Some(lines) = cache.get(&key) {
+        return lines.clone();
+    }
+    let (ss, theme) = syntaxes();
+    // nomi comuni nei ``` che le grammatiche non riconoscono
+    let token = match lang.to_lowercase().as_str() {
+        "shell" | "console" | "shellsession" | "terminal" => "bash",
+        "jsx" => "js",
+        "csharp" | "c#" => "cs",
+        "golang" => "go",
+        _ => lang,
+    };
+    let syntax = ss
+        .find_syntax_by_token(token)
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let mut h = HighlightLines::new(syntax, theme);
+    let bg = code_bg();
+    let lines: Vec<Vec<Span<'static>>> = code
+        .lines()
+        .map(|line| {
+            let line = format!("{line}\n");
+            let regions = h.highlight_line(&line, ss).unwrap_or_default();
+            regions
+                .into_iter()
+                .map(|(st, text)| {
+                    let mut style =
+                        Style::new()
+                            .bg(bg)
+                            .fg(Color::Rgb(st.foreground.r, st.foreground.g, st.foreground.b));
+                    if st.font_style.contains(FontStyle::BOLD) {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                    if st.font_style.contains(FontStyle::ITALIC) {
+                        style = style.add_modifier(Modifier::ITALIC);
+                    }
+                    Span::styled(text.trim_end_matches('\n').to_string(), style)
+                })
+                .collect()
+        })
+        .collect();
+    if cache.len() > 256 {
+        cache.clear();
+    }
+    cache.insert(key, lines.clone());
+    lines
+}
+
+/// Blocco di codice in lettura: il testo arriva a pezzi e si evidenzia tutto insieme alla fine.
+struct CodeBlock {
+    /// linguaggio dichiarato dopo ``` ("" se assente o blocco rientrato)
+    lang: String,
+    /// recintato da ```: ha una riga d'intestazione (col linguaggio) e una di chiusura
+    fenced: bool,
+    text: String,
+    /// riga sorgente della prima riga di codice
+    first: Option<usize>,
 }
 
 pub(crate) struct Preview {
@@ -138,7 +242,7 @@ struct Renderer<'a> {
     /// la riga in costruzione inizia con il marcatore di lista, che fa già da rientro
     at_marker: bool,
     quote: usize,
-    in_code: bool,
+    code: Option<CodeBlock>,
     heading: Option<(HeadingLevel, String)>,
     /// destinazioni dei link cliccabili; `link` è quello in corso
     dests: Vec<String>,
@@ -379,6 +483,54 @@ impl Renderer<'_> {
         }
     }
 
+    /// Blocco di codice su sfondo più chiaro, esteso a tutta la larghezza: riga d'intestazione col
+    /// linguaggio a destra (sulla riga ``` di apertura), codice colorato, riga vuota sulla ``` di chiusura.
+    /// Ogni riga di codice va a capo da sé, così anteprima e sorgente restano allineate.
+    fn code_block(&mut self, code: CodeBlock) {
+        let bg = Style::new().bg(code_bg());
+        let (bar, indent) = (self.bar(), " ".repeat(self.indent));
+        let prefix = || vec![bar.clone(), Span::raw(indent.clone()), Span::styled("  ", bg)];
+        let fill = |mut spans: Vec<Span<'static>>, width: usize| {
+            let used: usize = spans.iter().map(Span::width).sum();
+            spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
+            Line::from(spans)
+        };
+        let width = self.width;
+        if code.fenced {
+            let mut head = prefix();
+            let used: usize = head.iter().map(Span::width).sum();
+            let label = &code.lang;
+            let label_w = unicode_width::UnicodeWidthStr::width(label.as_str());
+            if !label.is_empty() && used + label_w < width {
+                head.push(Span::styled(" ".repeat(width - used - label_w - 1), bg));
+                head.push(Span::styled(
+                    label.clone(),
+                    bg.fg(Color::Gray).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            self.push_line(fill(head, width), self.line, true);
+        }
+        let first = code.first.unwrap_or(self.line);
+        for (i, spans) in highlight(&code.lang, &code.text).into_iter().enumerate() {
+            let src = first + i;
+            let rows = wrap(
+                spans.into_iter().map(|s| (s, src, None)).collect(),
+                width,
+                prefix(),
+                prefix(),
+            );
+            if rows.is_empty() {
+                self.push_line(fill(prefix(), width), src, true);
+            }
+            for (line, src, _) in rows {
+                self.push_line(fill(line.spans, width), src, true);
+            }
+        }
+        if code.fenced {
+            self.push_line(fill(prefix(), width), self.end_line.saturating_sub(1), true);
+        }
+    }
+
     fn event(&mut self, ev: Event) {
         let width = self.width;
         match ev {
@@ -393,9 +545,18 @@ impl Renderer<'_> {
                     self.quote += 1;
                     self.push_style(Style::new().add_modifier(Modifier::ITALIC));
                 }
-                Tag::CodeBlock(_) => {
+                Tag::CodeBlock(kind) => {
                     self.flush();
-                    self.in_code = true;
+                    let (lang, fenced) = match kind {
+                        CodeBlockKind::Fenced(info) => (info.split_whitespace().next().unwrap_or("").to_string(), true),
+                        CodeBlockKind::Indented => (String::new(), false),
+                    };
+                    self.code = Some(CodeBlock {
+                        lang,
+                        fenced,
+                        text: String::new(),
+                        first: None,
+                    });
                 }
                 Tag::List(start) => {
                     self.flush();
@@ -476,7 +637,9 @@ impl Renderer<'_> {
                     self.blank();
                 }
                 TagEnd::CodeBlock => {
-                    self.in_code = false;
+                    if let Some(code) = self.code.take() {
+                        self.code_block(code);
+                    }
                     self.blank();
                 }
                 TagEnd::List(_) => {
@@ -523,23 +686,11 @@ impl Renderer<'_> {
                 }
                 _ => {}
             },
-            Event::Text(t) if self.in_code => {
-                // ogni riga di codice va a capo da sé, rientrata, così anteprima e schermo restano 1:1
-                let pad = || vec![Span::raw("  ")];
-                for (i, l) in t.lines().enumerate() {
-                    let src = self.line + i;
-                    let rows = wrap(
-                        vec![(Span::styled(l.to_string(), code_style()), src, None)],
-                        self.width,
-                        pad(),
-                        pad(),
-                    );
-                    if rows.is_empty() {
-                        self.push_line(Line::from(pad()), src, true);
-                    }
-                    for (line, src, _) in rows {
-                        self.push_line(line, src, true);
-                    }
+            Event::Text(t) if self.code.is_some() => {
+                let line = self.line;
+                if let Some(code) = &mut self.code {
+                    code.first.get_or_insert(line);
+                    code.text.push_str(&t);
                 }
             }
             Event::Text(t) | Event::Code(t) if self.image.is_some() => {
@@ -587,11 +738,7 @@ mod tests {
     use ratatui_image::picker::Picker;
 
     fn plain(src: &str, width: u16) -> Vec<String> {
-        render_markdown(src, width, None)
-            .lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
+        plain_lines(&render_markdown(src, width, None))
     }
 
     #[test]
@@ -614,9 +761,12 @@ mod tests {
                 "",
                 "─".repeat(40).as_str(),
                 "",
+                // intestazione (senza linguaggio), codice, chiusura
+                "",
                 "  x = 1",
-                "  ",
+                "",
                 "  y",
+                "",
                 "",
             ]
         );
@@ -658,7 +808,7 @@ mod tests {
     fn source_rows_map_to_preview_rows() {
         let src = "# Ab\ntesto\n\n- a\n- b\n\n```\nx\n```\n\n> q1\n> q2\nfine";
         let pv = render_markdown(src, 40, None);
-        let text = |i: usize| pv.lines[i].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let text = |i: usize| plain_lines(&pv)[i].clone();
         // titolo grande: la sua riga sorgente punta alla prima delle 4 righe a blocchi
         assert_eq!(pv.row_for(0), 0);
         assert_eq!(text(pv.row_for(1)), "testo");
@@ -666,7 +816,10 @@ mod tests {
         assert_eq!(text(pv.row_for(3)), "• a");
         assert_eq!(text(pv.row_for(4)), "• b");
         assert_eq!(text(pv.row_for(5)), "");
+        // le righe ``` di apertura e chiusura hanno ciascuna la sua riga nell'anteprima
+        assert_eq!(pv.row_for(6) + 1, pv.row_for(7));
         assert_eq!(text(pv.row_for(7)), "  x");
+        assert_eq!(pv.row_for(8), pv.row_for(7) + 1);
         // righe unite nello stesso paragrafo puntano alla riga che le contiene
         assert_eq!(text(pv.row_for(11)), "│ q1 q2 fine");
         assert_eq!(pv.row_for(12), pv.row_for(10));
@@ -708,10 +861,41 @@ mod tests {
     }
 
     fn plain_lines(pv: &Preview) -> Vec<String> {
+        // i blocchi di codice riempiono la riga di spazi colorati: lì contano solo i caratteri visibili
         pv.lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .map(|l| {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                if l.spans.iter().any(|s| s.style.bg == Some(code_bg())) {
+                    t.trim_end().to_string()
+                } else {
+                    t
+                }
+            })
             .collect()
+    }
+
+    #[test]
+    fn code_blocks_are_highlighted() {
+        let pv = render_markdown("```rust\nfn main() {}\n```\n\n```boh\nx\n```\n", 30, None);
+        let bg = code_bg();
+        // intestazione col linguaggio a destra, tutto su sfondo del blocco esteso alla larghezza
+        assert_eq!(plain_lines(&pv)[0], format!("{}rust", " ".repeat(25)));
+        for l in &pv.lines[..3] {
+            assert_eq!(l.width(), 30);
+            assert!(l.spans.iter().filter(|s| s.width() > 0).all(|s| s.style.bg == Some(bg)));
+        }
+        // "fn" ha un colore diverso da "main": evidenziato
+        let fg = |w: &str| {
+            pv.lines[1]
+                .spans
+                .iter()
+                .find(|s| s.content.contains(w))
+                .and_then(|s| s.style.fg)
+        };
+        assert_ne!(fg("fn"), fg("main"));
+        // linguaggio sconosciuto: testo semplice, ma l'etichetta resta
+        assert!(plain_lines(&pv)[4].ends_with("boh"));
     }
 
     #[test]

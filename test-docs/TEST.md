@@ -269,6 +269,86 @@ tell application "Foo"
 end tell
 ```
 
+Fenced code blocks can name their language, which enables syntax
+highlighting; the name is shown at the top right of the block:
+
+```rust
+use std::collections::HashMap;
+
+/// Counts how many times each word appears.
+fn word_count(text: &str) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    counts
+}
+```
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: float = 0.0
+    y: float = 0.0
+
+    def norm(self) -> float:
+        return (self.x ** 2 + self.y ** 2) ** 0.5  # Euclidean
+```
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+export async function fetchUser(id: number): Promise<User> {
+  const res = await fetch(`/api/users/${id}`);
+  return res.json();
+}
+```
+
+```bash
+#!/usr/bin/env bash
+for f in *.md; do
+  echo "Converting $f"
+  pandoc "$f" -o "${f%.md}.html"
+done
+```
+
+```json
+{
+  "name": "mdedit",
+  "version": "0.1.0",
+  "features": ["preview", "images", "highlighting"],
+  "stable": true
+}
+```
+
+```toml
+[package]
+name = "mdedit"
+edition = "2021"
+
+[dependencies]
+syntect = { version = "5.3", default-features = false }
+```
+
+```sql
+SELECT name, COUNT(*) AS posts
+FROM users JOIN posts ON posts.user_id = users.id
+WHERE posts.created_at > '2024-01-01'
+GROUP BY name
+ORDER BY posts DESC;
+```
+
+An unknown language keeps the block style without colors:
+
+```klingon
+Qapla'!
+```
+
 ## Span Elements
 
 ### Links
