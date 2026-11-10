@@ -3,6 +3,7 @@ use std::{
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use image::{imageops::FilterType, DynamicImage};
@@ -24,6 +25,139 @@ use ratatui::{
 };
 use ratatui_image::{picker::Picker, protocol::Protocol, Image, Resize};
 use tui_textarea::{CursorMove, TextArea};
+
+/// Testi dell'interfaccia in una lingua.
+struct Tr {
+    saved: &'static str,
+    save_error: &'static str,
+    usage: &'static str,
+    unsaved: &'static str,
+    editor: &'static str,
+    preview: &'static str,
+    preview_keys: &'static str,
+    split_side: &'static str,
+    split_stacked: &'static str,
+    keys: &'static str,
+    line: &'static str,
+    image: &'static str,
+    no_anchor: &'static str,
+}
+
+const EN: Tr = Tr {
+    saved: "Saved",
+    save_error: "Error saving file",
+    usage: "usage",
+    unsaved: "Unsaved changes! Press Ctrl+Q again to quit without saving",
+    editor: "Editor",
+    preview: "Preview",
+    preview_keys: "↑↓ PgUp PgDn",
+    split_side: "side-by-side split",
+    split_stacked: "stacked split",
+    keys: "^E editor  ^P preview  ^L split/rotate  ^S save  ^Q quit",
+    line: "Ln",
+    image: "image",
+    no_anchor: "Link target not found",
+};
+
+const ES: Tr = Tr {
+    saved: "Guardado",
+    save_error: "Error al guardar",
+    usage: "uso",
+    unsaved: "¡Cambios sin guardar! Pulsa Ctrl+Q otra vez para salir sin guardar",
+    editor: "Editor",
+    preview: "Vista previa",
+    preview_keys: "↑↓ RePág AvPág",
+    split_side: "división lado a lado",
+    split_stacked: "división apilada",
+    keys: "^E editor  ^P vista previa  ^L dividir/girar  ^S guardar  ^Q salir",
+    line: "Lín",
+    image: "imagen",
+    no_anchor: "Destino del enlace no encontrado",
+};
+
+const DE: Tr = Tr {
+    saved: "Gespeichert",
+    save_error: "Fehler beim Speichern",
+    usage: "Verwendung",
+    unsaved: "Ungespeicherte Änderungen! Erneut Strg+Q zum Beenden ohne Speichern",
+    editor: "Editor",
+    preview: "Vorschau",
+    preview_keys: "↑↓ Bild↑ Bild↓",
+    split_side: "geteilt nebeneinander",
+    split_stacked: "geteilt übereinander",
+    keys: "^E Editor  ^P Vorschau  ^L teilen/drehen  ^S speichern  ^Q beenden",
+    line: "Z",
+    image: "Bild",
+    no_anchor: "Linkziel nicht gefunden",
+};
+
+const PT: Tr = Tr {
+    saved: "Guardado",
+    save_error: "Erro ao guardar",
+    usage: "uso",
+    unsaved: "Alterações não guardadas! Prima Ctrl+Q outra vez para sair sem guardar",
+    editor: "Editor",
+    preview: "Pré-visualização",
+    preview_keys: "↑↓ PgUp PgDn",
+    split_side: "divisão lado a lado",
+    split_stacked: "divisão empilhada",
+    keys: "^E editor  ^P pré-visualização  ^L dividir/rodar  ^S guardar  ^Q sair",
+    line: "Ln",
+    image: "imagem",
+    no_anchor: "Destino da ligação não encontrado",
+};
+
+const FR: Tr = Tr {
+    saved: "Enregistré",
+    save_error: "Erreur d'enregistrement",
+    usage: "usage",
+    unsaved: "Modifications non enregistrées ! Ctrl+Q à nouveau pour quitter sans enregistrer",
+    editor: "Éditeur",
+    preview: "Aperçu",
+    preview_keys: "↑↓ PgPréc PgSuiv",
+    split_side: "partage côte à côte",
+    split_stacked: "partage superposé",
+    keys: "^E éditeur  ^P aperçu  ^L partager/pivoter  ^S enregistrer  ^Q quitter",
+    line: "Ln",
+    image: "image",
+    no_anchor: "Cible du lien introuvable",
+};
+
+const IT: Tr = Tr {
+    saved: "Salvato",
+    save_error: "Errore nel salvataggio",
+    usage: "uso",
+    unsaved: "Modifiche non salvate! Ctrl+Q di nuovo per uscire senza salvare",
+    editor: "Editor",
+    preview: "Anteprima",
+    preview_keys: "↑↓ PgSu PgGiù",
+    split_side: "split affiancato",
+    split_stacked: "split sovrapposto",
+    keys: "^E editor  ^P anteprima  ^L split/ruota  ^S salva  ^Q esci",
+    line: "Ln",
+    image: "immagine",
+    no_anchor: "Destinazione del link non trovata",
+};
+
+/// Lingua dal locale POSIX (LC_ALL > LC_MESSAGES > LANG, es. "de_DE.UTF-8"); inglese se assente o non tradotta.
+fn lang(locale: &str) -> &'static Tr {
+    match locale.get(..2) {
+        Some("es") => &ES,
+        Some("de") => &DE,
+        Some("pt") => &PT,
+        Some("fr") => &FR,
+        Some("it") => &IT,
+        _ => &EN,
+    }
+}
+
+fn tr() -> &'static Tr {
+    static TR: OnceLock<&Tr> = OnceLock::new();
+    TR.get_or_init(|| {
+        let var = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()));
+        lang(&var.unwrap_or_default())
+    })
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -47,6 +181,8 @@ struct App<'a> {
     /// area del testo nell'editor e nell'anteprima nell'ultimo disegno, per il mouse
     editor_inner: Rect,
     preview_inner: Option<Rect>,
+    /// link interni visibili nell'anteprima: area sullo schermo, destinazione, (riga sorgente, riga d'anteprima) del titolo
+    links: Vec<(Rect, String, Option<(usize, usize)>)>,
     /// selezione col mouse in corso (tasto sinistro premuto nell'editor)
     dragging: bool,
     images: Images,
@@ -75,16 +211,16 @@ impl App<'_> {
         match fs::write(&self.path, text) {
             Ok(()) => {
                 self.dirty = false;
-                self.status = "Salvato".into();
+                self.status = tr().saved.into();
             }
-            Err(e) => self.status = format!("Errore nel salvataggio: {e}"),
+            Err(e) => self.status = format!("{}: {e}", tr().save_error),
         }
     }
 }
 
 fn main() -> io::Result<()> {
     let Some(path) = env::args().nth(1) else {
-        eprintln!("uso: mdedit <file.md>");
+        eprintln!("{}: mdedit <file.md>", tr().usage);
         std::process::exit(1);
     };
     let text = match fs::read_to_string(&path) {
@@ -93,7 +229,7 @@ fn main() -> io::Result<()> {
         Err(e) => return Err(e),
     };
     let mut editor = TextArea::from(text.lines());
-    editor.set_block(Block::default().borders(Borders::ALL).title(" Editor "));
+    editor.set_block(Block::default().borders(Borders::ALL).title(format!(" {} ", tr().editor)));
     editor.set_cursor_line_style(Style::default());
 
     let mut terminal = ratatui::init();
@@ -121,6 +257,7 @@ fn main() -> io::Result<()> {
         editor_left: 0,
         editor_inner: Rect::default(),
         preview_inner: None,
+        links: Vec::new(),
         dragging: false,
         images,
         // ponytail: con a capo misti vince CRLF se ce n'è almeno uno
@@ -163,7 +300,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                     return Ok(());
                 }
                 app.quit_armed = true;
-                app.status = "Modifiche non salvate! Ctrl+Q di nuovo per uscire senza salvare".into();
+                app.status = tr().unsaved.into();
             }
             (true, KeyCode::Char('s')) => app.save(),
             (true, KeyCode::Char('e')) => app.view = View::Editor,
@@ -222,6 +359,11 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
                 }
             }
         }
+        MouseEventKind::Down(MouseButton::Left) if app.preview_inner.is_some_and(|p| p.contains(pos)) => {
+            if let Some((_, dest, target)) = app.links.iter().find(|l| l.0.contains(pos)).cloned() {
+                follow_link(app, &dest, target);
+            }
+        }
         MouseEventKind::Down(MouseButton::Left) if app.view != View::Preview && r.contains(pos) => {
             app.editor.cancel_selection();
             jump_to(app, pos);
@@ -238,6 +380,21 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
         }
         _ => {}
     }
+}
+
+/// Porta al titolo di un link interno: in cima all'editor (e all'anteprima, se è da sola).
+fn follow_link(app: &mut App, dest: &str, target: Option<(usize, usize)>) {
+    let Some((line, row)) = target else {
+        app.status = format!("{}: {dest}", tr().no_anchor);
+        return;
+    };
+    app.editor.cancel_selection();
+    // scorre la vista di tui-textarea insieme alla nostra copia `editor_top`, poi ci mette il cursore
+    let delta = line as i64 - app.editor_top as i64;
+    app.editor.scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
+    app.editor_top = line;
+    app.editor.move_cursor(CursorMove::Jump(line.min(u16::MAX as usize) as u16, 0));
+    app.preview_scroll = row;
 }
 
 /// Porta il cursore sotto il mouse. Fuori dall'editor si ferma al bordo: oltre quello in alto o in
@@ -292,6 +449,7 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     let cursor_row = app.editor.cursor().0;
     app.preview_inner = None;
+    app.links.clear();
     if let Some(area) = editor_area {
         app.editor_inner = area.inner(Margin { vertical: 1, horizontal: 1 });
         app.editor_h = area.height.saturating_sub(2).max(1) as usize;
@@ -303,7 +461,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if let Some(area) = preview_area {
-        let block = Block::default().borders(Borders::ALL).title(" Anteprima ");
+        let block = Block::default().borders(Borders::ALL).title(format!(" {} ", tr().preview));
         let inner = block.inner(area);
         app.preview_inner = Some(inner);
         f.render_widget(block, area);
@@ -324,10 +482,19 @@ fn draw(f: &mut Frame, app: &mut App) {
         }
         let content = Rect { y: inner.y + pad as u16, height: inner.height - pad as u16, ..inner };
         let total = pv.lines.len();
+        let (top, h) = (app.preview_scroll, content.height as usize);
+        app.links = pv
+            .links
+            .iter()
+            .filter(|l| (top..top + h).contains(&l.line))
+            .map(|l| {
+                let rect = Rect::new(content.x + l.x, content.y + (l.line - top) as u16, l.width, 1);
+                (rect, l.dest.clone(), l.target.map(|t| (t, pv.row_for(t))))
+            })
+            .collect();
         let lines = pv.lines.into_iter().skip(app.preview_scroll).take(content.height as usize).collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
         // immagini sopra le righe riservate; di quelle tagliate dallo scorrimento si disegna solo la parte visibile
-        let (top, h) = (app.preview_scroll, content.height as usize);
         for slot in &pv.images {
             let (first, last) = (slot.line, slot.line + slot.rows as usize);
             let (from, to) = (first.max(top), last.min(top + h));
@@ -345,21 +512,24 @@ fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
+    let t = tr();
     let view = match app.view {
-        View::Editor => "editor",
-        View::Preview => "anteprima (↑↓ PgSu PgGiù)",
-        View::Split if app.side_by_side => "split affiancato",
-        View::Split => "split sovrapposto",
+        View::Editor => t.editor.to_lowercase(),
+        View::Preview => format!("{} ({})", t.preview.to_lowercase(), t.preview_keys),
+        View::Split if app.side_by_side => t.split_side.into(),
+        View::Split => t.split_stacked.into(),
     };
     let text = format!(
-        " {}{} | {view} | img: {:?} | ^E editor  ^P anteprima  ^L split/ruota  ^S salva  ^Q esci  {}",
+        " {}{} | {view} | img: {:?} | {}  {}",
         app.path,
         if app.dirty { " [+]" } else { "" },
         app.images.picker.protocol_type(),
+        t.keys,
         app.status
     );
     let pos = format!(
-        " Ln {}/{} · {} ",
+        " {} {}/{} · {} ",
+        t.line,
         cursor_row + 1,
         app.editor.lines().len(),
         if app.eol == "\r\n" { "CRLF" } else { "LF" }
@@ -393,6 +563,30 @@ struct Preview {
     /// per ogni riga: riga del sorgente da cui proviene, e se ha contenuto (false = separatore)
     src: Vec<(usize, bool)>,
     images: Vec<ImageSlot>,
+    links: Vec<LinkHit>,
+}
+
+/// Pezzo di link interno (`[testo](#titolo)`) su una riga d'anteprima; un link che va a capo ne ha più d'uno.
+struct LinkHit {
+    line: usize,
+    x: u16,
+    width: u16,
+    dest: String,
+    /// riga sorgente del titolo di destinazione, None se non esiste
+    target: Option<usize>,
+}
+
+/// Ancora di un titolo come la genera GitHub: minuscole, spazi → '-', via la punteggiatura.
+fn slug(text: &str) -> String {
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Spazio riservato a un'immagine nell'anteprima: righe vuote da `line`, a partire dalla colonna `x`.
@@ -490,7 +684,16 @@ fn render_markdown(src: &str, width: u16, images: Option<&mut Images>) -> Previe
         r.event(ev);
     }
     r.flush();
-    Preview { lines: r.lines, src: r.src, images: r.slots }
+    let links = r
+        .links
+        .into_iter()
+        .map(|(line, x, width, i)| {
+            let dest = r.dests[i].clone();
+            let target = r.anchors.get(&dest[1..].to_lowercase()).copied();
+            LinkHit { line, x, width, dest, target }
+        })
+        .collect();
+    Preview { lines: r.lines, src: r.src, images: r.slots, links }
 }
 
 #[derive(Default)]
@@ -505,8 +708,8 @@ struct Renderer<'a> {
     /// righe del sorgente in cui iniziano/finiscono l'evento corrente
     line: usize,
     end_line: usize,
-    /// testo in attesa di andare a capo, con la riga sorgente di ogni pezzo
-    spans: Vec<(Span<'static>, usize)>,
+    /// testo in attesa di andare a capo, con la riga sorgente e l'eventuale link interno di ogni pezzo
+    spans: Vec<(Span<'static>, usize, Option<usize>)>,
     styles: Vec<Style>,
     width: usize,
     /// per ogni lista aperta: prossimo numero (None = puntata) e rientro del testo della voce corrente
@@ -518,6 +721,13 @@ struct Renderer<'a> {
     quote: usize,
     in_code: bool,
     heading: Option<(HeadingLevel, String)>,
+    /// destinazioni dei link interni; `link` è quello in corso
+    dests: Vec<String>,
+    link: Option<usize>,
+    /// pezzi di link sulle righe prodotte: (riga, colonna, larghezza, indice in `dests`)
+    links: Vec<(usize, u16, u16, usize)>,
+    /// ancora del titolo → riga sorgente
+    anchors: HashMap<String, usize>,
 }
 
 fn heading_style(level: HeadingLevel) -> Style {
@@ -593,30 +803,42 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
 
 /// A capo per parole entro `width`: la prima riga inizia con `first`, le successive con `cont`
 /// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
-/// Ogni riga prodotta porta la riga sorgente del suo primo carattere.
+/// Ogni riga prodotta porta la riga sorgente del suo primo carattere e i pezzi di link interni
+/// che contiene: (colonna, larghezza, link).
 fn wrap(
-    spans: Vec<(Span<'static>, usize)>,
+    spans: Vec<(Span<'static>, usize, Option<usize>)>,
     width: usize,
     first: Vec<Span<'static>>,
     cont: Vec<Span<'static>>,
-) -> Vec<(Line<'static>, usize)> {
+) -> Vec<(Line<'static>, usize, Vec<(u16, u16, usize)>)> {
     use unicode_width::UnicodeWidthChar;
     let cw = |c: char| c.width().unwrap_or(0);
-    let chars: Vec<(char, Style, usize)> =
-        spans.iter().flat_map(|(s, src)| s.content.chars().map(move |c| (c, s.style, *src))).collect();
+    type Ch = (char, Style, usize, Option<usize>);
+    let chars: Vec<Ch> =
+        spans.iter().flat_map(|(s, src, link)| s.content.chars().map(move |c| (c, s.style, *src, *link))).collect();
 
     let mut lines = Vec::new();
     let mut prefix = first;
-    let mut cur: Vec<(char, Style, usize)> = Vec::new();
+    let mut cur: Vec<Ch> = Vec::new();
     let mut cur_w = 0;
-    let mut emit = |prefix: &mut Vec<Span<'static>>, cur: &mut Vec<(char, Style, usize)>, cur_w: &mut usize| {
+    let mut emit = |prefix: &mut Vec<Span<'static>>, cur: &mut Vec<Ch>, cur_w: &mut usize| {
         while cur.last().is_some_and(|c| c.0 == ' ') {
             cur.pop();
         }
         let src = cur.first().map_or(0, |c| c.2);
         let mut line = std::mem::replace(prefix, cont.clone());
         let plen = line.len();
-        for (c, style, _) in cur.drain(..) {
+        let mut col = line.iter().map(Span::width).sum::<usize>() as u16;
+        let mut hits: Vec<(u16, u16, usize)> = Vec::new();
+        for (c, style, _, link) in cur.drain(..) {
+            let w = cw(c) as u16;
+            if let Some(l) = link {
+                match hits.last_mut() {
+                    Some(h) if h.2 == l && h.0 + h.1 == col => h.1 += w,
+                    _ => hits.push((col, w, l)),
+                }
+            }
+            col += w;
             let n = line.len();
             match line.last_mut() {
                 Some(s) if s.style == style && n > plen => s.content.to_mut().push(c),
@@ -624,7 +846,7 @@ fn wrap(
             }
         }
         *cur_w = 0;
-        lines.push((Line::from(line), src));
+        lines.push((Line::from(line), src, hits));
     };
 
     // gli spazi a inizio riga si tengono solo sulla prima (es. rientro del marcatore di lista annidata)
@@ -647,12 +869,13 @@ fn wrap(
             emit(&mut prefix, &mut cur, &mut cur_w);
             wrapped = true;
         }
-        for &(c, style, src) in token {
+        for &ch in token {
+            let c = ch.0;
             if !cur.is_empty() && cur_w + cw(c) > avail(&prefix) {
                 emit(&mut prefix, &mut cur, &mut cur_w);
                 wrapped = true;
             }
-            cur.push((c, style, src));
+            cur.push(ch);
             cur_w += cw(c);
         }
     }
@@ -681,7 +904,7 @@ impl Renderer<'_> {
     }
 
     fn push_span(&mut self, span: Span<'static>) {
-        self.spans.push((span, self.line));
+        self.spans.push((span, self.line, self.link));
     }
 
     fn flush(&mut self) {
@@ -691,7 +914,9 @@ impl Renderer<'_> {
         let pad = Span::raw(" ".repeat(self.indent));
         let first = if std::mem::take(&mut self.at_marker) { vec![self.bar()] } else { vec![self.bar(), pad.clone()] };
         let spans = std::mem::take(&mut self.spans);
-        for (line, src) in wrap(spans, self.width, first, vec![self.bar(), pad]) {
+        for (line, src, hits) in wrap(spans, self.width, first, vec![self.bar(), pad]) {
+            let n = self.lines.len();
+            self.links.extend(hits.into_iter().map(|(x, w, l)| (n, x, w, l)));
             self.push_line(line, src, true);
         }
     }
@@ -751,13 +976,27 @@ impl Renderer<'_> {
                 Tag::Emphasis => self.push_style(Style::new().add_modifier(Modifier::ITALIC)),
                 Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
                 Tag::Strikethrough => self.push_style(Style::new().add_modifier(Modifier::CROSSED_OUT)),
-                Tag::Link { .. } => self.push_style(Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+                Tag::Link { dest_url, .. } => {
+                    if dest_url.starts_with('#') {
+                        self.dests.push(dest_url.to_string());
+                        self.link = Some(self.dests.len() - 1);
+                    }
+                    self.push_style(Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED));
+                }
                 _ => {}
             },
             Event::End(tag) => match tag {
                 TagEnd::Heading(_) => {
                     self.styles.pop();
                     if let Some((level, text)) = self.heading.take() {
+                        // titoli uguali: "-1", "-2", ... come su GitHub
+                        let base = slug(&text);
+                        let (mut anchor, mut n) = (base.clone(), 0);
+                        while self.anchors.contains_key(&anchor) {
+                            n += 1;
+                            anchor = format!("{base}-{n}");
+                        }
+                        self.anchors.insert(anchor, self.line);
                         if let Some(rows) = big_heading(level, &text, width) {
                             self.spans.clear();
                             let style = Style { fg: heading_style(level).fg, ..Style::default() };
@@ -809,11 +1048,15 @@ impl Renderer<'_> {
                         }
                         None => {
                             let style = Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
-                            self.push_span(Span::styled(format!("[immagine: {alt}]"), style));
+                            self.push_span(Span::styled(format!("[{}: {alt}]", tr().image), style));
                         }
                     }
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                TagEnd::Link => {
+                    self.link = None;
+                    self.styles.pop();
+                }
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     self.styles.pop();
                 }
                 _ => {}
@@ -823,11 +1066,11 @@ impl Renderer<'_> {
                 let pad = || vec![Span::raw("  ")];
                 for (i, l) in t.lines().enumerate() {
                     let src = self.line + i;
-                    let rows = wrap(vec![(Span::styled(l.to_string(), code_style()), src)], self.width, pad(), pad());
+                    let rows = wrap(vec![(Span::styled(l.to_string(), code_style()), src, None)], self.width, pad(), pad());
                     if rows.is_empty() {
                         self.push_line(Line::from(pad()), src, true);
                     }
-                    for (line, src) in rows {
+                    for (line, src, _) in rows {
                         self.push_line(line, src, true);
                     }
                 }
@@ -854,7 +1097,7 @@ impl Renderer<'_> {
                 self.blank();
             }
             Event::TaskListMarker(done) => {
-                if let Some((s, _)) = self.spans.last_mut() {
+                if let Some((s, ..)) = self.spans.last_mut() {
                     let bullet = BULLETS.iter().find(|b| s.content.ends_with(*b));
                     if let Some(b) = bullet {
                         let indent = &s.content[..s.content.len() - b.len()];
@@ -953,7 +1196,8 @@ mod tests {
         // mancante o remota: solo testo alternativo
         let pv = render_markdown("![manca](img/no.png) ![web](https://x.org/a.png)", 80, Some(&mut im));
         assert!(pv.images.is_empty());
-        assert_eq!(plain_lines(&pv)[0], "[immagine: manca] [immagine: web]");
+        let i = tr().image;
+        assert_eq!(plain_lines(&pv)[0], format!("[{i}: manca] [{i}: web]"));
         // codifica della parte visibile di un'immagine tagliata dallo scorrimento
         let pv = render_markdown("![pano](img/panorama.png)", 40, Some(&mut im));
         assert!(im.protocol(&pv.images[0], 3, 4).is_some());
@@ -961,6 +1205,25 @@ mod tests {
 
     fn plain_lines(pv: &Preview) -> Vec<String> {
         pv.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    #[test]
+    fn internal_links_point_to_headings() {
+        let pv = render_markdown("# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org)\n", 40, None);
+        let l: Vec<_> = pv.links.iter().map(|l| (l.x, l.width, l.dest.as_str(), l.target)).collect();
+        assert_eq!(l, [(6, 3, "#due-tre", Some(2)), (12, 2, "#manca", None)]);
+        // un link che va a capo è cliccabile su entrambe le righe
+        let pv = render_markdown("# Titolo\n\n[uno due tre](#titolo)\n", 8, None);
+        let l: Vec<_> = pv.links.iter().map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target)).collect();
+        assert_eq!(l, [(0, 0, 7, Some(0)), (1, 0, 3, Some(0))]);
+    }
+
+    #[test]
+    fn picks_language_from_locale() {
+        assert_eq!(lang("de_DE.UTF-8").preview, "Vorschau");
+        assert_eq!(lang("pt_BR").saved, "Guardado");
+        assert_eq!(lang("C.UTF-8").preview, "Preview");
+        assert_eq!(lang("").preview, "Preview");
     }
 
     #[test]
@@ -989,3 +1252,4 @@ mod tests {
         assert_eq!(plain("# Titolo\n", 7)[0], "Titolo");
     }
 }
+
