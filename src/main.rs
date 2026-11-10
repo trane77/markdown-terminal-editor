@@ -3,10 +3,10 @@ use std::{env, fs, io};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     DefaultTerminal, Frame,
 };
 use tui_textarea::{CursorMove, TextArea};
@@ -167,6 +167,8 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.editor_h = area.height.saturating_sub(2).max(1) as usize;
         app.editor_top = next_scroll_top(app.editor_top, cursor_row, app.editor_h);
         f.render_widget(&app.editor, area);
+        // sempre sul bordo destro dell'editor: nello split affiancato è il bordo in mezzo ai due riquadri
+        scrollbar(f, area, app.editor.lines().len(), app.editor_top, app.editor_h);
     }
 
     if let Some(area) = preview_area {
@@ -188,8 +190,13 @@ fn draw(f: &mut Frame, app: &mut App) {
             app.preview_scroll = app.preview_scroll.min(pv.lines.len().saturating_sub(inner.height as usize));
         }
         let content = Rect { y: inner.y + pad as u16, height: inner.height - pad as u16, ..inner };
+        let total = pv.lines.len();
         let lines = pv.lines.into_iter().skip(app.preview_scroll).take(content.height as usize).collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
+        // nello split affiancato basta la scrollbar dell'editor in mezzo: i due riquadri scorrono insieme
+        if !(app.view == View::Split && app.side_by_side) {
+            scrollbar(f, area, total, app.preview_scroll, inner.height as usize);
+        }
     }
 
     let view = match app.view {
@@ -205,6 +212,17 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.status
     );
     f.render_widget(Paragraph::new(text).style(Style::new().add_modifier(Modifier::REVERSED)), status);
+}
+
+/// Scrollbar disegnata sopra il bordo destro di `area` (riquadro con bordi).
+fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
+    // ratatui vuole il numero di posizioni di scorrimento: con `top` all'ultima la barra tocca il fondo
+    let mut state = ScrollbarState::new(total.saturating_sub(view) + 1).position(top).viewport_content_length(view);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"));
+    f.render_stateful_widget(bar, area.inner(Margin { vertical: 1, horizontal: 0 }), &mut state);
 }
 
 /// Simbolo delle liste puntate per livello di annidamento (dal 4° livello si ricomincia).
