@@ -308,3 +308,31 @@ Unlike a pre-formatted code block, a code span indicates code within a
 normal paragraph. For example:
 
 Use the `printf()` function.
+
+### Images
+
+Markdown uses an image syntax that is intended to resemble the syntax
+for links: an exclamation mark, followed by the alt text in square
+brackets, followed by the path in parentheses.
+
+A wide image (PNG), scaled down to the pane width:
+
+![Panorama con sole e colline](img/panorama.png)
+
+A tall image (JPEG), limited in height:
+
+![Strisce colorate](img/strisce.jpg "Strisce")
+
+Text before ![inline](img/panorama.png) and after an image in the same paragraph.
+
+- A list item with an image:
+
+  ![Panorama nella lista](img/panorama.png)
+
+> A blockquote with an image:
+>
+> ![Strisce nella citazione](img/strisce.jpg)
+
+A missing file shows only its alt text: ![File mancante](img/non-esiste.png)
+
+A remote image shows only its alt text: ![Logo remoto](https://example.com/logo.png)

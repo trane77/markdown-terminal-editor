@@ -1,4 +1,10 @@
-use std::{env, fs, io};
+use std::{
+    collections::HashMap,
+    env, fs, io,
+    path::{Path, PathBuf},
+};
+
+use image::{imageops::FilterType, DynamicImage};
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
@@ -9,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     DefaultTerminal, Frame,
 };
+use ratatui_image::{picker::Picker, protocol::Protocol, Image, Resize};
 use tui_textarea::{CursorMove, TextArea};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -28,6 +35,7 @@ struct App<'a> {
     /// sua stessa regola (scorre il minimo per tenere visibile il cursore), vedi `next_scroll_top`
     editor_top: usize,
     editor_h: usize,
+    images: Images,
     dirty: bool,
     quit_armed: bool,
     status: String,
@@ -72,6 +80,13 @@ fn main() -> io::Result<()> {
     editor.set_block(Block::default().borders(Borders::ALL).title(" Editor "));
     editor.set_cursor_line_style(Style::default());
 
+    let mut terminal = ratatui::init();
+    // chiede al terminale protocollo grafico (sixel, kitty, iTerm2) e dimensione dei caratteri;
+    // senza risposta si ripiega sui mezzi blocchi colorati
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    let base = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let images = Images::new(picker, base.to_path_buf());
+
     let mut app = App {
         path,
         editor,
@@ -80,11 +95,11 @@ fn main() -> io::Result<()> {
         preview_scroll: 0,
         editor_top: 0,
         editor_h: 1,
+        images,
         dirty: false,
         quit_armed: false,
         status: String::new(),
     };
-    let mut terminal = ratatui::init();
     let res = run(&mut terminal, &mut app);
     ratatui::restore();
     res
@@ -176,7 +191,8 @@ fn draw(f: &mut Frame, app: &mut App) {
         let inner = block.inner(area);
         f.render_widget(block, area);
         // ponytail: ri-parsa tutto il documento a ogni frame; cache sul testo se diventa lento con file enormi
-        let pv = render_markdown(&app.editor.lines().join("\n"), inner.width);
+        app.images.max_rows = (inner.height / 2).max(3);
+        let pv = render_markdown(&app.editor.lines().join("\n"), inner.width, Some(&mut app.images));
         let mut pad = 0;
         if app.view == View::Split {
             // la riga d'anteprima della riga col cursore va alla stessa altezza dello schermo del cursore;
@@ -193,6 +209,19 @@ fn draw(f: &mut Frame, app: &mut App) {
         let total = pv.lines.len();
         let lines = pv.lines.into_iter().skip(app.preview_scroll).take(content.height as usize).collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
+        // immagini sopra le righe riservate; di quelle tagliate dallo scorrimento si disegna solo la parte visibile
+        let (top, h) = (app.preview_scroll, content.height as usize);
+        for slot in &pv.images {
+            let (first, last) = (slot.line, slot.line + slot.rows as usize);
+            let (from, to) = (first.max(top), last.min(top + h));
+            if from >= to {
+                continue;
+            }
+            let rect = Rect { x: content.x + slot.x, y: content.y + (from - top) as u16, width: slot.cols, height: (to - from) as u16 };
+            if let Some(p) = app.images.protocol(slot, (from - first) as u16, (to - from) as u16) {
+                f.render_widget(Image::new(p), rect);
+            }
+        }
         // nello split affiancato basta la scrollbar dell'editor in mezzo: i due riquadri scorrono insieme
         if !(app.view == View::Split && app.side_by_side) {
             scrollbar(f, area, total, app.preview_scroll, inner.height as usize);
@@ -206,9 +235,10 @@ fn draw(f: &mut Frame, app: &mut App) {
         View::Split => "split sovrapposto",
     };
     let text = format!(
-        " {}{} | {view} | ^E editor  ^P anteprima  ^L split/ruota  ^S salva  ^Q esci  {}",
+        " {}{} | {view} | img: {:?} | ^E editor  ^P anteprima  ^L split/ruota  ^S salva  ^Q esci  {}",
         app.path,
         if app.dirty { " [+]" } else { "" },
+        app.images.picker.protocol_type(),
         app.status
     );
     f.render_widget(Paragraph::new(text).style(Style::new().add_modifier(Modifier::REVERSED)), status);
@@ -236,6 +266,80 @@ struct Preview {
     lines: Vec<Line<'static>>,
     /// per ogni riga: riga del sorgente da cui proviene, e se ha contenuto (false = separatore)
     src: Vec<(usize, bool)>,
+    images: Vec<ImageSlot>,
+}
+
+/// Spazio riservato a un'immagine nell'anteprima: righe vuote da `line`, a partire dalla colonna `x`.
+struct ImageSlot {
+    line: usize,
+    x: u16,
+    cols: u16,
+    rows: u16,
+    path: PathBuf,
+}
+
+/// Immagini dell'anteprima: lettura, misura in celle e codifica per il terminale, con cache.
+struct Images {
+    picker: Picker,
+    /// cartella del file .md: i percorsi relativi delle immagini partono da qui
+    base: PathBuf,
+    /// altezza massima di un'immagine, in righe
+    max_rows: u16,
+    // ponytail: le cache non si aggiornano se un'immagine cambia su disco; serve riavviare l'editor
+    decoded: HashMap<PathBuf, Option<DynamicImage>>,
+    resized: HashMap<(PathBuf, u16, u16), DynamicImage>,
+    protocols: HashMap<(PathBuf, u16, u16, u16, u16), Protocol>,
+}
+
+impl Images {
+    fn new(picker: Picker, base: PathBuf) -> Self {
+        Images { picker, base, max_rows: 20, decoded: HashMap::new(), resized: HashMap::new(), protocols: HashMap::new() }
+    }
+
+    /// Celle (colonne, righe) occupate dall'immagine `dest` entro `width` colonne, rispettando le
+    /// proporzioni. None se non è un file locale leggibile (remota, mancante, formato non supportato).
+    fn size(&mut self, dest: &str, width: u16) -> Option<(PathBuf, u16, u16)> {
+        if dest.contains("://") || width == 0 {
+            return None;
+        }
+        let path = self.base.join(dest);
+        let img = self.decoded.entry(path.clone()).or_insert_with(|| image::open(&path).ok()).as_ref()?;
+        let (fw, fh) = self.picker.font_size();
+        let (fw, fh, w, h) = (fw as f64, fh as f64, img.width() as f64, img.height() as f64);
+        let mut cols = (w / fw).ceil().clamp(1.0, width as f64);
+        let mut rows = (cols * fw * h / w / fh).ceil().max(1.0);
+        if rows > self.max_rows as f64 {
+            rows = self.max_rows as f64;
+            cols = (rows * fh * w / h / fw).round().clamp(1.0, width as f64);
+        }
+        Some((path, cols as u16, rows as u16))
+    }
+
+    /// Immagine codificata per il terminale, limitata alle righe `skip..skip + take`: le altre sono
+    /// fuori dallo schermo. Ritagliare l'immagine stessa funziona con ogni protocollo, sixel compreso.
+    fn protocol(&mut self, slot: &ImageSlot, skip: u16, take: u16) -> Option<&Protocol> {
+        let key = (slot.path.clone(), slot.cols, slot.rows, skip, take);
+        if !self.protocols.contains_key(&key) {
+            // ponytail: svuota tutto oltre una soglia; un LRU se lo scorrimento tra molte immagini rallenta
+            if self.protocols.len() > 64 {
+                self.protocols.clear();
+            }
+            if self.resized.len() > 16 {
+                self.resized.clear();
+            }
+            let (fw, fh) = self.picker.font_size();
+            let (pw, ph) = (slot.cols as u32 * fw as u32, slot.rows as u32 * fh as u32);
+            let img = self.decoded.get(&slot.path)?.as_ref()?;
+            let full = self
+                .resized
+                .entry((slot.path.clone(), slot.cols, slot.rows))
+                .or_insert_with(|| img.resize_exact(pw, ph, FilterType::Triangle));
+            let part = full.crop_imm(0, skip as u32 * fh as u32, pw, take as u32 * fh as u32);
+            let proto = self.picker.new_protocol(part, Rect::new(0, 0, slot.cols, take), Resize::Fit(None)).ok()?;
+            self.protocols.insert(key.clone(), proto);
+        }
+        self.protocols.get(&key)
+    }
 }
 
 impl Preview {
@@ -248,10 +352,10 @@ impl Preview {
     }
 }
 
-fn render_markdown(src: &str, width: u16) -> Preview {
+fn render_markdown(src: &str, width: u16, images: Option<&mut Images>) -> Preview {
     let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
     let line_of = |byte: usize| starts.partition_point(|&s| s <= byte) - 1;
-    let mut r = Renderer { width: width as usize, ..Renderer::default() };
+    let mut r = Renderer { width: width as usize, images, ..Renderer::default() };
     for (ev, range) in Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter() {
         r.line = line_of(range.start);
         // riga dopo l'ultima con contenuto: alcuni blocchi (liste) includono le righe vuote che li seguono
@@ -260,12 +364,17 @@ fn render_markdown(src: &str, width: u16) -> Preview {
         r.event(ev);
     }
     r.flush();
-    Preview { lines: r.lines, src: r.src }
+    Preview { lines: r.lines, src: r.src, images: r.slots }
 }
 
 #[derive(Default)]
-struct Renderer {
+struct Renderer<'a> {
     lines: Vec<Line<'static>>,
+    /// None (nei test): le immagini mostrano solo il testo alternativo
+    images: Option<&'a mut Images>,
+    slots: Vec<ImageSlot>,
+    /// immagine in corso: destinazione e testo alternativo
+    image: Option<(String, String)>,
     src: Vec<(usize, bool)>,
     /// righe del sorgente in cui iniziano/finiscono l'evento corrente
     line: usize,
@@ -427,7 +536,7 @@ fn wrap(
     lines
 }
 
-impl Renderer {
+impl Renderer<'_> {
     fn style(&self) -> Style {
         self.styles.last().copied().unwrap_or_default()
     }
@@ -512,6 +621,7 @@ impl Renderer {
                     self.at_marker = true;
                     self.push_span(marker);
                 }
+                Tag::Image { dest_url, .. } => self.image = Some((dest_url.to_string(), String::new())),
                 Tag::Emphasis => self.push_style(Style::new().add_modifier(Modifier::ITALIC)),
                 Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
                 Tag::Strikethrough => self.push_style(Style::new().add_modifier(Modifier::CROSSED_OUT)),
@@ -557,6 +667,26 @@ impl Renderer {
                     }
                 }
                 TagEnd::Item => self.flush(),
+                TagEnd::Image => {
+                    let Some((dest, alt)) = self.image.take() else { return };
+                    // dopo la barra delle citazioni e il rientro della voce di lista
+                    let x = (2 * self.quote + self.indent) as u16;
+                    let avail = (self.width as u16).saturating_sub(x);
+                    match self.images.as_deref_mut().and_then(|im| im.size(&dest, avail)) {
+                        Some((path, cols, rows)) => {
+                            self.flush();
+                            let line = self.lines.len();
+                            for _ in 0..rows {
+                                self.push_line(Line::from(self.bar()), self.line, true);
+                            }
+                            self.slots.push(ImageSlot { line, x, cols, rows, path });
+                        }
+                        None => {
+                            let style = Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+                            self.push_span(Span::styled(format!("[immagine: {alt}]"), style));
+                        }
+                    }
+                }
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                     self.styles.pop();
                 }
@@ -574,6 +704,11 @@ impl Renderer {
                     for (line, src) in rows {
                         self.push_line(line, src, true);
                     }
+                }
+            }
+            Event::Text(t) | Event::Code(t) if self.image.is_some() => {
+                if let Some((_, alt)) = &mut self.image {
+                    alt.push_str(&t);
                 }
             }
             Event::Text(t) | Event::Code(t) if self.heading.is_some() => {
@@ -611,7 +746,7 @@ mod tests {
     use super::*;
 
     fn plain(src: &str, width: u16) -> Vec<String> {
-        render_markdown(src, width)
+        render_markdown(src, width, None)
             .lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -656,7 +791,7 @@ mod tests {
     #[test]
     fn source_rows_map_to_preview_rows() {
         let src = "# Ab\ntesto\n\n- a\n- b\n\n```\nx\n```\n\n> q1\n> q2\nfine";
-        let pv = render_markdown(src, 40);
+        let pv = render_markdown(src, 40, None);
         let text = |i: usize| pv.lines[i].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
         // titolo grande: la sua riga sorgente punta alla prima delle 4 righe a blocchi
         assert_eq!(pv.row_for(0), 0);
@@ -672,6 +807,37 @@ mod tests {
     }
 
     #[test]
+    fn images_reserve_rows_or_show_alt_text() {
+        let mut im = Images::new(Picker::halfblocks(), "test-docs".into());
+        im.max_rows = 10;
+        // halfblocks: celle da 10x20 px. panorama 640x320 in 40 colonne → 400x200 px → 10 righe
+        let src = "prima\n\n![pano](img/panorama.png)\n\ndopo";
+        let pv = render_markdown(src, 40, Some(&mut im));
+        assert_eq!(pv.images.len(), 1);
+        let s = &pv.images[0];
+        assert_eq!((s.line, s.x, s.cols, s.rows), (2, 0, 40, 10));
+        assert_eq!(pv.row_for(2), 2);
+        assert_eq!(pv.lines[s.line + s.rows as usize + 1].spans.iter().map(|x| x.content.as_ref()).collect::<String>(), "dopo");
+        // immagine alta: limitata a max_rows, larghezza ridotta in proporzione (240x480 → 10 righe, 10 colonne)
+        let pv = render_markdown("![s](img/strisce.jpg)", 40, Some(&mut im));
+        assert_eq!((pv.images[0].cols, pv.images[0].rows), (10, 10));
+        // in una citazione parte dopo la barra
+        let pv = render_markdown("> ![s](img/strisce.jpg)", 40, Some(&mut im));
+        assert_eq!(pv.images[0].x, 2);
+        // mancante o remota: solo testo alternativo
+        let pv = render_markdown("![manca](img/no.png) ![web](https://x.org/a.png)", 80, Some(&mut im));
+        assert!(pv.images.is_empty());
+        assert_eq!(plain_lines(&pv)[0], "[immagine: manca] [immagine: web]");
+        // codifica della parte visibile di un'immagine tagliata dallo scorrimento
+        let pv = render_markdown("![pano](img/panorama.png)", 40, Some(&mut im));
+        assert!(im.protocol(&pv.images[0], 3, 4).is_some());
+    }
+
+    fn plain_lines(pv: &Preview) -> Vec<String> {
+        pv.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    #[test]
     fn big_headings() {
         // H1 largo: 8 celle per lettera, 4 righe
         let out = plain("# Ab\n", 80);
@@ -679,7 +845,7 @@ mod tests {
         assert!(out[..4].iter().all(|r| r.chars().count() == 16));
         assert!(out[0].contains('█') || out[0].contains('▀') || out[0].contains('▄'));
         // H1 in spazio stretto → versione compatta da 4 celle
-        let out = render_markdown("# Abcdef\n", 30).lines;
+        let out = render_markdown("# Abcdef\n", 30, None).lines;
         assert_eq!(out[0].spans[0].content.chars().count(), 24);
         // H2 compatto, H3 testo normale
         let out = plain("## Ab\n", 80);
