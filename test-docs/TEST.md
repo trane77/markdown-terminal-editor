@@ -301,6 +301,14 @@ _single underscores_
 
 __double underscores__
 
+Text wrapped with double tildes (`~~`) is struck through, an extension
+supported by GitHub Flavored Markdown:
+
+~~double tildes~~
+
+Styles can be combined: ***bold italic***, **bold with ~~strikethrough~~**,
+and *italic with ~~strikethrough~~*.
+
 ### Code
 
 To indicate a span of code, wrap it with backtick quotes (`` ` ``).
