@@ -248,7 +248,7 @@ const IT: Tr = Tr {
     reloaded: "Ricaricato dal disco",
 };
 
-/// Language from the POSIX locale (LC_ALL > LC_MESSAGES > LANG, e.g. "de_DE.UTF-8"); English if unset or untranslated.
+/// Language from a locale name, POSIX ("de_DE.UTF-8") or BCP 47 ("de-DE"); English if untranslated.
 fn lang(locale: &str) -> &'static Tr {
     match locale.get(..2) {
         Some("es") => &ES,
@@ -260,13 +260,17 @@ fn lang(locale: &str) -> &'static Tr {
     }
 }
 
+/// The POSIX locale variables (LC_ALL > LC_MESSAGES > LANG) win, so they also override the system
+/// language on Windows and macOS. If none is set (usual on Windows, and in some macOS terminals),
+/// the user's preferred UI language from the OS is used.
 pub(crate) fn tr() -> &'static Tr {
     static TR: OnceLock<&Tr> = OnceLock::new();
     TR.get_or_init(|| {
-        let var = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
             .iter()
-            .find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()));
-        lang(&var.unwrap_or_default())
+            .find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()))
+            .or_else(sys_locale::get_locale);
+        lang(&locale.unwrap_or_default())
     })
 }
 
@@ -278,6 +282,7 @@ mod tests {
     fn picks_language_from_locale() {
         assert_eq!(lang("de_DE.UTF-8").preview, "Vorschau");
         assert_eq!(lang("pt_BR").saved, "Guardado");
+        assert_eq!(lang("it-IT").preview, "Anteprima");
         assert_eq!(lang("C.UTF-8").preview, "Preview");
         assert_eq!(lang("").preview, "Preview");
     }

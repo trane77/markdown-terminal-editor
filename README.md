@@ -34,7 +34,8 @@ document on the right, and the two panes scroll together line by line.
 - **Safe with untrusted files.** Control characters in the document are neutralized in the preview,
   so a Markdown file can't send escape sequences to your terminal.
 - **Six interface languages.** English, Italian, Spanish, German, Portuguese and French, picked from
-  your locale.
+  your locale (`LC_ALL`, `LC_MESSAGES`, `LANG`) or, if unset, from the system language on
+  Windows and macOS.
 - **Your file stays as it was.** Line endings (LF or CRLF) are kept when you save.
 - **Notices changes made by other programs.** If the file changes on disk while it's open, mdedit
   asks whether to reload it or keep your version, and it never overwrites those changes without
