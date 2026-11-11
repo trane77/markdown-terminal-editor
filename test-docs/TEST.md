@@ -226,6 +226,22 @@ to be indented *twice* -- 8 spaces or two tabs:
 
         <code goes here>
 
+Task lists, a GitHub Flavored Markdown extension, put a checkbox
+in front of each item: `[ ]` for an open task, `[x]` for a done one.
+They can be nested and mixed with plain items:
+
+- [x] Write the first draft
+- [x] Add images and code samples
+- [ ] Review the whole document
+  - [x] Check the headings
+  - [ ] Fix the broken links
+  - [ ] Proofread the code blocks
+- [ ] Publish it
+- A plain item in the same list
+
+1. [x] Numbered lists can hold tasks too
+2. [ ] This one is still open
+
 ### Code Blocks
 
 Pre-formatted code blocks are used for writing about programming or

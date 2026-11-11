@@ -824,11 +824,20 @@ impl Renderer<'_> {
                 self.blank();
             }
             Event::TaskListMarker(done) => {
+                // two spaces: some terminals draw the checkbox wider than one cell, over a single space
+                let check = if done { "☑  " } else { "☐  " };
                 if let Some((s, ..)) = self.spans.last_mut() {
-                    let bullet = BULLETS.iter().find(|b| s.content.ends_with(*b));
-                    if let Some(b) = bullet {
-                        let indent = &s.content[..s.content.len() - b.len()];
-                        s.content = format!("{indent}{}", if done { "☑ " } else { "☐ " }).into();
+                    s.content = match BULLETS.iter().find(|b| s.content.ends_with(*b)) {
+                        // bulleted item: the checkbox replaces the bullet
+                        Some(b) => format!("{}{check}", &s.content[..s.content.len() - b.len()]),
+                        // numbered item: the checkbox goes after the number
+                        None => format!("{}{check}", s.content),
+                    }
+                    .into();
+                    // continuation lines and sub-items align with the task's text
+                    self.indent = s.width();
+                    if let Some(l) = self.lists.last_mut() {
+                        l.1 = self.indent;
                     }
                 }
             }
@@ -856,8 +865,8 @@ mod tests {
                 "",
                 "• a",
                 "  ◦ b",
-                "☑ done",
-                "☐ to do",
+                "☑  done",
+                "☐  to do",
                 "",
                 "1. one",
                 "2. two",
@@ -904,7 +913,14 @@ mod tests {
             plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n", 40),
             ["1. a", "2. b", "   1. c", "   2. d", "      1. e", ""]
         );
-        assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑ b", ""]);
+        assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑  b", ""]);
+        // bulleted task: wrapped text and sub-items align with the task's text
+        assert_eq!(plain("- [ ] aa bb\n  - c\n", 7), ["☐  aa", "   bb", "   ◦ c", ""]);
+        // numbered task: checkbox after the number, wrapped text aligned with the task text
+        assert_eq!(
+            plain("1. [ ] aa bb\n2. [x] c\n", 10),
+            ["1. ☐  aa", "      bb", "2. ☑  c", ""]
+        );
         // word longer than the line: split
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
     }
