@@ -256,7 +256,13 @@ fn main() -> io::Result<()> {
     }));
     // ask the terminal for its graphics protocol (sixel, kitty, iTerm2) and font size;
     // without an answer, fall back to colored half blocks
-    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    // MDEDIT_HALFBLOCKS skips the query: for terminals that claim graphics they cannot show (like the
+    // one used for the README screenshots), or that never answer it (tmux), which costs the first key
+    let picker = if env::var_os("MDEDIT_HALFBLOCKS").is_some() {
+        Picker::halfblocks()
+    } else {
+        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+    };
     let base = Path::new(&path)
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

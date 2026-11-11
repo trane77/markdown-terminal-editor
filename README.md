@@ -112,6 +112,9 @@ links in the preview. Hold `Shift` while dragging to use your terminal's own sel
 
 - **Images.** Real images need a terminal with sixel, kitty or iTerm2 graphics, such as WezTerm,
   kitty, iTerm2, foot or Windows Terminal 1.22+. Other terminals get a half-block approximation.
+  At startup mdedit asks the terminal which graphics it supports. Set `MDEDIT_HALFBLOCKS=1` to skip
+  that question and always use half blocks: this helps when a terminal claims graphics it can't
+  draw, or never answers (inside tmux the unanswered question swallows the first key you press).
 - **Colors.** Code blocks use 24-bit color when the terminal advertises it (`COLORTERM=truecolor`
   or Windows Terminal), and the 256-color palette otherwise. The code block background assumes a
   dark terminal theme.
@@ -129,6 +132,18 @@ cargo test
 cargo clippy --all-targets
 cargo fmt
 ```
+
+The screenshots in `docs/` are generated with [VHS](https://github.com/charmbracelet/vhs) from the
+tapes in `docs/tapes/`, one per screenshot. To regenerate them after a change (needs Docker and
+rustup; VHS runs from its official Docker image):
+
+```bash
+scripts/screenshots.sh
+```
+
+Pass one or more tapes to regenerate only those, e.g.
+`scripts/screenshots.sh docs/tapes/screenshot_2_code.tape`. To add a screenshot, copy a tape, change
+the text it searches for and the output file, then reference the new image here.
 
 The code lives in `src/`:
 
