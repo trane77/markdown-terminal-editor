@@ -1,4 +1,4 @@
-//! Markdown → righe d'anteprima: a capo, liste, citazioni, titoli grandi, immagini, link.
+//! Markdown → preview lines: wrapping, lists, quotes, big headings, images, links, code.
 
 use std::{
     borrow::{Borrow, Cow},
@@ -29,12 +29,12 @@ fn code_style() -> Style {
     Style::new().fg(Color::Green)
 }
 
-/// Grammatiche e tema dei blocchi di codice, caricati alla prima occorrenza.
+/// Grammars and theme for code blocks, loaded on first use.
 fn syntaxes() -> &'static (SyntaxSet, Theme) {
     static S: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
     S.get_or_init(|| {
         let mut themes = ThemeSet::load_defaults().themes;
-        // se il tema cambiasse nome, un altro tra quelli inclusi: quello vuoto darebbe testo nero su grigio scuro
+        // if the theme gets renamed, use another bundled one: the empty default would give black text on dark gray
         let theme = themes
             .remove("base16-eighties.dark")
             .or_else(|| themes.into_values().next())
@@ -43,8 +43,8 @@ fn syntaxes() -> &'static (SyntaxSet, Theme) {
     })
 }
 
-/// Colore del tema per il terminale: a 24 bit se li dichiara (COLORTERM, Windows Terminal),
-/// altrimenti il più vicino della tavolozza a 256 colori.
+/// Theme color for the terminal: 24-bit if it advertises them (COLORTERM, Windows Terminal),
+/// otherwise the nearest one in the 256-color palette.
 fn term_color(r: u8, g: u8, b: u8) -> Color {
     static TRUECOLOR: OnceLock<bool> = OnceLock::new();
     let truecolor = *TRUECOLOR.get_or_init(|| {
@@ -57,7 +57,7 @@ fn term_color(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
-/// Il più vicino tra il cubo 6x6x6 (16..=231) e la scala di grigi (232..=255) dei 256 colori.
+/// Nearest of the 6x6x6 cube (16..=231) and the gray ramp (232..=255) of the 256-color palette.
 fn indexed(r: u8, g: u8, b: u8) -> Color {
     const STEPS: [i32; 6] = [0, 95, 135, 175, 215, 255];
     let (r, g, b) = (r as i32, g as i32, b as i32);
@@ -73,14 +73,14 @@ fn indexed(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
-/// Sfondo dei blocchi di codice: quello del tema, un grigio scuro un po' più chiaro del terminale.
+/// Code block background: the theme's, a dark gray slightly lighter than the terminal.
 fn code_bg() -> Color {
     let bg = syntaxes().1.settings.background;
     bg.map_or(term_color(45, 45, 45), |c| term_color(c.r, c.g, c.b))
 }
 
-/// Blocco di codice evidenziato, con lo stato dell'evidenziatore dopo ogni riga: quando il blocco
-/// cambia si riparte dalla prima riga diversa invece che dall'inizio.
+/// Highlighted code block, with the highlighter state after each line: when the block changes,
+/// highlighting resumes from the first changed line instead of the start.
 struct Highlighted {
     lang: String,
     code: String,
@@ -88,8 +88,8 @@ struct Highlighted {
     states: Vec<(ParseState, HighlightState)>,
 }
 
-/// Blocchi evidenziati nel disegno in corso e in quello precedente: l'anteprima si ricalcola a ogni
-/// disegno, e ciò che non è più nel documento esce dalla cache dopo un giro.
+/// Blocks highlighted in the current and the previous frame: the preview is rebuilt every frame,
+/// and whatever is no longer in the document leaves the cache after one round.
 #[derive(Default)]
 struct HighlightCache {
     cur: HashMap<u64, Arc<Highlighted>>,
@@ -104,7 +104,7 @@ fn highlight_cache() -> MutexGuard<'static, HighlightCache> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// Righe di codice colorate per `lang` (nome o estensione, es. "rust", "py"); testo semplice se sconosciuto.
+/// Colored code lines for `lang` (name or extension, e.g. "rust", "py"); plain text if unknown.
 fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
     let mut hasher = DefaultHasher::new();
     (lang, code).hash(&mut hasher);
@@ -118,8 +118,8 @@ fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
         cache.cur.insert(key, b.clone());
         return b;
     }
-    // blocco modificato: si tengono le righe iniziali uguali a quelle della versione più simile
-    // ponytail: una modifica in cima a un blocco lo rievidenzia tutto; servirebbe confrontare gli stati
+    // changed block: keep the leading lines shared with the most similar cached version
+    // ponytail: an edit at the top of a block re-highlights all of it; comparing states would avoid that
     let old = cache
         .cur
         .values()
@@ -132,7 +132,7 @@ fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
     });
 
     let (ss, theme) = syntaxes();
-    // nomi comuni nei ``` che le grammatiche non riconoscono
+    // common ``` names the grammars do not recognize
     let token = match lang.to_lowercase().as_str() {
         "shell" | "console" | "shellsession" | "terminal" => "bash",
         "jsx" => "js",
@@ -166,7 +166,7 @@ fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
                     Span::styled(text.trim_end_matches('\n').to_string(), style)
                 })
                 .collect(),
-            // riga che l'evidenziatore non riesce a leggere: resta visibile, senza colori
+            // line the highlighter cannot parse: keep it visible, without colors
             Err(_) => vec![Span::styled(line.to_string(), bg)],
         };
         lines.push(spans);
@@ -182,8 +182,8 @@ fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
     block
 }
 
-/// Toglie dal sorgente ciò che il terminale interpreterebbe: i caratteri di controllo (ESC, BEL, ...)
-/// diventano U+FFFD e le tabulazioni spazi fino alla colonna multipla di 4. Le righe restano le stesse.
+/// Removes from the source what the terminal would interpret: control characters (ESC, BEL, ...)
+/// become U+FFFD and tabs become spaces up to the next multiple of 4. Line numbers stay the same.
 fn sanitize(src: &str) -> Cow<'_, str> {
     if !src.chars().any(|c| c.is_control() && c != '\n') {
         return Cow::Borrowed(src);
@@ -211,43 +211,43 @@ fn sanitize(src: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Blocco di codice in lettura: il testo arriva a pezzi e si evidenzia tutto insieme alla fine.
+/// Code block being read: its text arrives in pieces and is highlighted all at once at the end.
 struct CodeBlock {
-    /// linguaggio dichiarato dopo ``` ("" se assente o blocco rientrato)
+    /// language given after ``` ("" if missing or for indented blocks)
     lang: String,
-    /// recintato da ```: ha una riga d'intestazione (col linguaggio) e una di chiusura
+    /// fenced with ```: has a header row (with the language) and a closing row
     fenced: bool,
     text: String,
-    /// riga sorgente della prima riga di codice
+    /// source row of the first code line
     first: Option<usize>,
 }
 
 pub(crate) struct Preview {
     pub(crate) lines: Vec<Line<'static>>,
-    /// per ogni riga: riga del sorgente da cui proviene, e se ha contenuto (false = separatore)
+    /// for each line: the source row it comes from, and whether it has content (false = separator)
     src: Vec<(usize, bool)>,
     pub(crate) images: Vec<ImageSlot>,
     pub(crate) links: Vec<LinkHit>,
 }
 
-/// Pezzo di link cliccabile su una riga d'anteprima: interno (`[testo](#titolo)`) o esterno (vedi
-/// `is_external`). Un link che va a capo ne ha più d'uno, con lo stesso `id`.
+/// Piece of a clickable link on a preview line: internal (`[text](#heading)`) or external (see
+/// `is_external`). A link that wraps has several, with the same `id`.
 pub(crate) struct LinkHit {
     pub(crate) id: usize,
     pub(crate) line: usize,
     pub(crate) x: u16,
     pub(crate) width: u16,
     pub(crate) dest: String,
-    /// link interni: riga sorgente del titolo di destinazione, None se non esiste
+    /// internal links: source row of the target heading, None if it does not exist
     pub(crate) target: Option<usize>,
 }
 
-/// Link da aprire nel browser. Altri schemi (file://, percorsi relativi) non sono cliccabili.
+/// Links to open in the browser. Other schemes (file://, relative paths) are not clickable.
 pub(crate) fn is_external(dest: &str) -> bool {
     ["http://", "https://", "mailto:"].iter().any(|p| dest.starts_with(p))
 }
 
-/// Ancora di un titolo come la genera GitHub: minuscole, spazi → '-', via la punteggiatura.
+/// Heading anchor as GitHub generates it: lowercase, spaces → '-', punctuation removed.
 fn slug(text: &str) -> String {
     text.trim()
         .to_lowercase()
@@ -261,8 +261,8 @@ fn slug(text: &str) -> String {
 }
 
 impl Preview {
-    /// Riga d'anteprima che corrisponde alla riga `row` del sorgente: la prima con contenuto
-    /// tra quelle provenienti dalla riga sorgente più vicina che non la supera.
+    /// Preview row matching source row `row`: the first one with content among those coming
+    /// from the nearest source row not past it.
     pub(crate) fn row_for(&self, row: usize) -> usize {
         let Some(best) = self.src.iter().map(|s| s.0).filter(|&s| s <= row).max() else {
             return 0;
@@ -292,7 +292,7 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
         Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter()
     {
         r.line = line_of(range.start);
-        // riga dopo l'ultima con contenuto: alcuni blocchi (liste) includono le righe vuote che li seguono
+        // row after the last one with content: some blocks (lists) include the blank lines after them
         let end = src[..range.end].trim_end().len();
         r.end_line = if end == 0 { 0 } else { line_of(end - 1) + 1 };
         r.event(ev);
@@ -327,34 +327,34 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
 #[derive(Default)]
 struct Renderer<'a> {
     lines: Vec<Line<'static>>,
-    /// None (nei test): le immagini mostrano solo il testo alternativo
+    /// None (in tests): images show only their alt text
     images: Option<&'a mut Images>,
     slots: Vec<ImageSlot>,
-    /// immagine in corso: destinazione e testo alternativo
+    /// image being read: destination and alt text
     image: Option<(String, String)>,
     src: Vec<(usize, bool)>,
-    /// righe del sorgente in cui iniziano/finiscono l'evento corrente
+    /// source rows where the current event starts/ends
     line: usize,
     end_line: usize,
-    /// testo in attesa di andare a capo, con la riga sorgente e l'eventuale link interno di ogni pezzo
+    /// text waiting to be wrapped, with the source row and the link (if any) of each piece
     spans: Vec<(Span<'static>, usize, Option<usize>)>,
     styles: Vec<Style>,
     width: usize,
-    /// per ogni lista aperta: prossimo numero (None = puntata) e rientro del testo della voce corrente
+    /// for each open list: next number (None = bulleted) and text indent of the current item
     lists: Vec<(Option<u64>, usize)>,
-    /// rientro delle righe che proseguono la voce di lista corrente
+    /// indent of the lines continuing the current list item
     indent: usize,
-    /// la riga in costruzione inizia con il marcatore di lista, che fa già da rientro
+    /// the line being built starts with the list marker, which already acts as indent
     at_marker: bool,
     quote: usize,
     code: Option<CodeBlock>,
     heading: Option<(HeadingLevel, String)>,
-    /// destinazioni dei link cliccabili; `link` è quello in corso
+    /// destinations of clickable links; `link` is the current one
     dests: Vec<String>,
     link: Option<usize>,
-    /// pezzi di link sulle righe prodotte: (riga, colonna, larghezza, indice in `dests`)
+    /// link pieces on the produced lines: (line, column, width, index in `dests`)
     links: Vec<(usize, u16, u16, usize)>,
-    /// ancora del titolo → riga sorgente
+    /// heading anchor → source row
     anchors: HashMap<String, usize>,
 }
 
@@ -370,12 +370,12 @@ fn heading_style(level: HeadingLevel) -> Style {
     }
 }
 
-/// Titolo in lettere a blocchi: H1 alto 4 righe, largo 8 celle per lettera o, se non ci sta, 4;
-/// H2 alto 4 righe e largo 4. Max 2 righe di testo grande, altrimenti None → titolo normale.
+/// Heading in block letters: H1 4 rows tall and 8 cells per letter, or 4 if it does not fit;
+/// H2 4 rows tall and 4 wide. At most 2 rows of big text, otherwise None → normal heading.
 fn big_heading(level: HeadingLevel, text: &str, width: usize) -> Option<Vec<String>> {
-    // righe del font 8x8 per ogni riga di pixel
+    // 8x8 font rows for each pixel row
     const FULL: &[&[usize]] = &[&[0], &[1], &[2], &[3], &[4], &[5], &[6], &[7]];
-    // (pixel per cella in orizzontale, righe del font)
+    // (horizontal pixels per cell, font rows)
     let scales: &[(usize, &[&[usize]])] = match level {
         HeadingLevel::H1 => &[(1, FULL), (2, FULL)],
         HeadingLevel::H2 => &[(2, FULL)],
@@ -405,8 +405,8 @@ fn wrap_words(text: &str, cap: usize) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// Font 8x8 → righe di terminale con i caratteri quadrante (2 pixel in verticale per cella,
-/// `sx` = 1 o 2 in orizzontale). Usa solo blocchi di base, visibili in ogni terminale.
+/// 8x8 font → terminal rows of quadrant characters (2 vertical pixels per cell, `sx` = 1 or 2
+/// horizontally). Uses only basic block characters, visible in every terminal.
 fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
     use font8x8::{UnicodeFonts, BASIC_FONTS, LATIN_FONTS};
     const QUAD: [char; 16] = [
@@ -432,7 +432,7 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
                 .map(|col| {
                     let mut i = 0;
                     for dy in 0..2 {
-                        // con sx=1 le due colonne coincidono: la cella è piena o vuota per tutta la larghezza
+                        // with sx=1 both columns coincide: the cell is full or empty across its width
                         for (dx, x) in [col * sx, col * sx + sx - 1].into_iter().enumerate() {
                             i |= px(x, row * 2 + dy) << (dy * 2 + dx);
                         }
@@ -444,13 +444,13 @@ fn big_text(text: &str, sx: usize, font_rows: &[&[usize]]) -> Vec<String> {
         .collect()
 }
 
-/// Pezzo di link interno su una riga prodotta da `wrap`: (colonna, larghezza, indice del link).
+/// Link piece on a line produced by `wrap`: (column, width, link index).
 type LinkSpan = (u16, u16, usize);
 
-/// A capo per parole entro `width`: la prima riga inizia con `first`, le successive con `cont`
-/// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
-/// Ogni riga prodotta porta la riga sorgente del suo primo carattere e i pezzi di link interni
-/// che contiene: (colonna, larghezza, link).
+/// Word wrap within `width`: the first line starts with `first`, the following ones with `cont`
+/// (quote bar + list indent). Words longer than the line are split.
+/// Each produced line carries the source row of its first character and the link pieces it
+/// contains: (column, width, link).
 fn wrap<S: Borrow<Span<'static>>>(
     spans: impl IntoIterator<Item = (S, usize, Option<usize>)>,
     width: usize,
@@ -498,7 +498,7 @@ fn wrap<S: Borrow<Span<'static>>>(
         lines.push((Line::from(line), src, hits));
     };
 
-    // gli spazi a inizio riga si tengono solo sulla prima (es. rientro del marcatore di lista annidata)
+    // leading spaces are kept only on the first line (e.g. the indent of a nested list marker)
     let mut wrapped = false;
     let mut i = 0;
     while i < chars.len() {
@@ -576,7 +576,7 @@ impl Renderer<'_> {
         }
     }
 
-    /// Riga vuota di separazione; dentro una citazione mantiene la barra, così la linea resta continua.
+    /// Blank separator line; inside a quote it keeps the bar, so the line stays continuous.
     fn blank(&mut self) {
         self.flush();
         if self.lines.last().is_some_and(|l| !l.spans.is_empty()) {
@@ -589,15 +589,15 @@ impl Renderer<'_> {
         }
     }
 
-    /// Blocco di codice su sfondo più chiaro, esteso a tutta la larghezza: riga d'intestazione col
-    /// linguaggio a destra (sulla riga ``` di apertura), codice colorato, riga vuota sulla ``` di chiusura.
-    /// Ogni riga di codice va a capo da sé, così anteprima e sorgente restano allineate.
+    /// Code block on a lighter full-width background: header row with the language on the right
+    /// (on the opening ```), highlighted code, blank row on the closing ```.
+    /// Each code line wraps on its own, so preview and source stay aligned.
     fn code_block(&mut self, code: CodeBlock) {
         let bg = Style::new().bg(code_bg());
         let (bar, indent) = (self.bar(), " ".repeat(self.indent));
         let prefix = || vec![bar.clone(), Span::raw(indent.clone()), Span::styled("  ", bg)];
         let width = self.width;
-        // `right` va allineato al margine destro; lo sfondo riempie il resto della riga
+        // `right` is aligned to the right edge; the background fills the rest of the line
         let fill = |mut spans: Vec<Span<'static>>, right: Option<Span<'static>>| {
             let used: usize = spans.iter().chain(&right).map(Span::width).sum();
             spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
@@ -645,7 +645,7 @@ impl Renderer<'_> {
                 Tag::CodeBlock(kind) => {
                     self.flush();
                     let (lang, fenced) = match kind {
-                        // "rust,ignore" (rustdoc) e "{.python .numberLines}" (pandoc): conta solo il primo nome
+                        // "rust,ignore" (rustdoc) and "{.python .numberLines}" (pandoc): only the first name counts
                         CodeBlockKind::Fenced(info) => {
                             let lang = info
                                 .trim_start_matches(['{', '.'])
@@ -669,7 +669,7 @@ impl Renderer<'_> {
                 }
                 Tag::Item => {
                     self.flush();
-                    // le sottovoci si allineano al testo della voce madre
+                    // sub-items align with the text of the parent item
                     let depth = self.lists.len().saturating_sub(1);
                     let indent = " ".repeat(self.lists.iter().rev().nth(1).map_or(0, |l| l.1));
                     let marker = match self.lists.last_mut() {
@@ -704,7 +704,7 @@ impl Renderer<'_> {
                 TagEnd::Heading(_) => {
                     self.styles.pop();
                     if let Some((level, text)) = self.heading.take() {
-                        // titoli uguali: "-1", "-2", ... come su GitHub
+                        // duplicate headings: "-1", "-2", ... as on GitHub
                         let base = slug(&text);
                         let (mut anchor, mut n) = (base.clone(), 0);
                         while self.anchors.contains_key(&anchor) {
@@ -729,7 +729,7 @@ impl Renderer<'_> {
                 TagEnd::BlockQuote(_) => {
                     self.styles.pop();
                     self.flush();
-                    // toglie la riga di sola barra lasciata dall'ultimo paragrafo, poi separa a livello esterno
+                    // drop the bar-only line left by the last paragraph, then separate at the outer level
                     if self
                         .lines
                         .last()
@@ -758,7 +758,7 @@ impl Renderer<'_> {
                 TagEnd::Item => self.flush(),
                 TagEnd::Image => {
                     let Some((dest, alt)) = self.image.take() else { return };
-                    // dopo la barra delle citazioni e il rientro della voce di lista
+                    // after the quote bar and the list item indent
                     let x = (2 * self.quote + self.indent) as u16;
                     let avail = (self.width as u16).saturating_sub(x);
                     match self.images.as_deref_mut().and_then(|im| im.size(&dest, avail)) {
@@ -848,25 +848,25 @@ mod tests {
 
     #[test]
     fn renders_basic_elements() {
-        let src = "### Titolo\n\n- a\n  - b\n- [x] fatto\n- [ ] da fare\n\n1. uno\n2. due\n\n> cit\n\n---\n\n```\nx = 1\n\ny\n```\n";
+        let src = "### Title\n\n- a\n  - b\n- [x] done\n- [ ] to do\n\n1. one\n2. two\n\n> quote\n\n---\n\n```\nx = 1\n\ny\n```\n";
         assert_eq!(
             plain(src, 40),
             [
-                "Titolo",
+                "Title",
                 "",
                 "• a",
                 "  ◦ b",
-                "☑ fatto",
-                "☐ da fare",
+                "☑ done",
+                "☐ to do",
                 "",
-                "1. uno",
-                "2. due",
+                "1. one",
+                "2. two",
                 "",
-                "│ cit",
+                "│ quote",
                 "",
                 "─".repeat(40).as_str(),
                 "",
-                // intestazione (senza linguaggio), codice, chiusura
+                // header (no language), code, closing row
                 "",
                 "  x = 1",
                 "",
@@ -879,54 +879,54 @@ mod tests {
 
     #[test]
     fn wraps_with_prefix() {
-        // citazione: ogni riga a capo ripete la barra, i paragrafi restano uniti dalla barra
+        // quote: every wrapped line repeats the bar, paragraphs stay joined by the bar
         assert_eq!(
-            plain("> uno due tre quattro\n", 12),
-            ["│ uno due", "│ tre", "│ quattro", ""]
+            plain("> one two three seven\n", 12),
+            ["│ one two", "│ three", "│ seven", ""]
         );
         assert_eq!(
-            plain("> a\n>\n> b\n\nfuori\n", 40),
-            ["│ a", "│ ", "│ b", "", "fuori", ""]
+            plain("> a\n>\n> b\n\noutside\n", 40),
+            ["│ a", "│ ", "│ b", "", "outside", ""]
         );
         assert_eq!(
             plain("> a\n>> b\n", 40),
             ["│ a", "│ ", "│ │ b", "", ""].map(String::from)[..4].to_vec()
         );
-        // lista: la continuazione rientra sotto il testo, non sotto il punto
-        assert_eq!(plain("- uno due tre\n- x\n", 9), ["• uno due", "  tre", "• x", ""]);
-        // simbolo diverso per livello, sottovoci allineate al testo della voce madre
+        // list: continuation lines indent under the text, not under the bullet
+        assert_eq!(plain("- one two three\n- x\n", 9), ["• one two", "  three", "• x", ""]);
+        // different bullet per level, sub-items aligned with the parent item's text
         assert_eq!(
             plain("* a\n   * b\n      * c\n         * d\n", 40),
             ["• a", "  ◦ b", "    ⊙ c", "      • d", ""]
         );
-        // numerazione da 1 a ogni livello, sottovoci sotto il testo di "2. "
+        // numbering restarts at 1 on each level, sub-items under the text of "2. "
         assert_eq!(
             plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n", 40),
             ["1. a", "2. b", "   1. c", "   2. d", "      1. e", ""]
         );
         assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑ b", ""]);
-        // parola più lunga della riga: spezzata
+        // word longer than the line: split
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
     }
 
     #[test]
     fn source_rows_map_to_preview_rows() {
-        let src = "# Ab\ntesto\n\n- a\n- b\n\n```\nx\n```\n\n> q1\n> q2\nfine";
+        let src = "# Ab\ntext\n\n- a\n- b\n\n```\nx\n```\n\n> q1\n> q2\nend";
         let pv = render_markdown(src, 40, None);
         let text = |i: usize| plain_lines(&pv)[i].clone();
-        // titolo grande: la sua riga sorgente punta alla prima delle 4 righe a blocchi
+        // big heading: its source row points at the first of the 4 block rows
         assert_eq!(pv.row_for(0), 0);
-        assert_eq!(text(pv.row_for(1)), "testo");
+        assert_eq!(text(pv.row_for(1)), "text");
         assert_eq!(text(pv.row_for(2)), "");
         assert_eq!(text(pv.row_for(3)), "• a");
         assert_eq!(text(pv.row_for(4)), "• b");
         assert_eq!(text(pv.row_for(5)), "");
-        // le righe ``` di apertura e chiusura hanno ciascuna la sua riga nell'anteprima
+        // the opening and closing ``` rows each have their own preview row
         assert_eq!(pv.row_for(6) + 1, pv.row_for(7));
         assert_eq!(text(pv.row_for(7)), "  x");
         assert_eq!(pv.row_for(8), pv.row_for(7) + 1);
-        // righe unite nello stesso paragrafo puntano alla riga che le contiene
-        assert_eq!(text(pv.row_for(11)), "│ q1 q2 fine");
+        // lines joined into one paragraph point at the line containing them
+        assert_eq!(text(pv.row_for(11)), "│ q1 q2 end");
         assert_eq!(pv.row_for(12), pv.row_for(10));
     }
 
@@ -934,8 +934,8 @@ mod tests {
     fn images_reserve_rows_or_show_alt_text() {
         let mut im = Images::new(Picker::halfblocks(), "test-docs".into());
         im.max_rows = 10;
-        // halfblocks: celle da 10x20 px. panorama 640x320 in 40 colonne → 400x200 px → 10 righe
-        let src = "prima\n\n![pano](img/panorama.png)\n\ndopo";
+        // halfblocks: 10x20 px cells. panorama 640x320 in 40 columns → 400x200 px → 10 rows
+        let src = "before\n\n![pano](img/panorama.png)\n\nafter";
         let pv = render_markdown(src, 40, Some(&mut im));
         assert_eq!(pv.images.len(), 1);
         let s = &pv.images[0];
@@ -947,26 +947,26 @@ mod tests {
                 .iter()
                 .map(|x| x.content.as_ref())
                 .collect::<String>(),
-            "dopo"
+            "after"
         );
-        // immagine alta: limitata a max_rows, larghezza ridotta in proporzione (240x480 → 10 righe, 10 colonne)
-        let pv = render_markdown("![s](img/strisce.jpg)", 40, Some(&mut im));
+        // tall image: limited to max_rows, width scaled down to match (240x480 → 10 rows, 10 columns)
+        let pv = render_markdown("![s](img/stripes.jpg)", 40, Some(&mut im));
         assert_eq!((pv.images[0].cols, pv.images[0].rows), (10, 10));
-        // in una citazione parte dopo la barra
-        let pv = render_markdown("> ![s](img/strisce.jpg)", 40, Some(&mut im));
+        // inside a quote it starts after the bar
+        let pv = render_markdown("> ![s](img/stripes.jpg)", 40, Some(&mut im));
         assert_eq!(pv.images[0].x, 2);
-        // mancante o remota: solo testo alternativo
-        let pv = render_markdown("![manca](img/no.png) ![web](https://x.org/a.png)", 80, Some(&mut im));
+        // missing or remote: alt text only
+        let pv = render_markdown("![missing](img/no.png) ![web](https://x.org/a.png)", 80, Some(&mut im));
         assert!(pv.images.is_empty());
         let i = tr().image;
-        assert_eq!(plain_lines(&pv)[0], format!("[{i}: manca] [{i}: web]"));
-        // codifica della parte visibile di un'immagine tagliata dallo scorrimento
+        assert_eq!(plain_lines(&pv)[0], format!("[{i}: missing] [{i}: web]"));
+        // encoding of the visible part of an image cut by scrolling
         let pv = render_markdown("![pano](img/panorama.png)", 40, Some(&mut im));
         assert!(im.protocol(&pv.images[0], 3, 4).is_some());
     }
 
     fn plain_lines(pv: &Preview) -> Vec<String> {
-        // i blocchi di codice riempiono la riga di spazi colorati: lì contano solo i caratteri visibili
+        // code blocks pad their lines with colored spaces: only visible characters count there
         pv.lines
             .iter()
             .map(|l| {
@@ -982,15 +982,15 @@ mod tests {
 
     #[test]
     fn code_blocks_are_highlighted() {
-        let pv = render_markdown("```rust\nfn main() {}\n```\n\n```boh\nx\n```\n", 30, None);
+        let pv = render_markdown("```rust\nfn main() {}\n```\n\n```unknown\nx\n```\n", 30, None);
         let bg = code_bg();
-        // intestazione col linguaggio a destra, tutto su sfondo del blocco esteso alla larghezza
+        // header with the language on the right, everything on the full-width block background
         assert_eq!(plain_lines(&pv)[0], format!("{}rust", " ".repeat(25)));
         for l in &pv.lines[..3] {
             assert_eq!(l.width(), 30);
             assert!(l.spans.iter().filter(|s| s.width() > 0).all(|s| s.style.bg == Some(bg)));
         }
-        // "fn" ha un colore diverso da "main": evidenziato
+        // "fn" has a different color from "main": highlighted
         let fg = |w: &str| {
             pv.lines[1]
                 .spans
@@ -999,8 +999,8 @@ mod tests {
                 .and_then(|s| s.style.fg)
         };
         assert_ne!(fg("fn"), fg("main"));
-        // linguaggio sconosciuto: testo semplice, ma l'etichetta resta
-        assert!(plain_lines(&pv)[4].ends_with("boh"));
+        // unknown language: plain text, but the label stays
+        assert!(plain_lines(&pv)[4].ends_with("unknown"));
     }
 
     #[test]
@@ -1010,7 +1010,7 @@ mod tests {
         assert_eq!(text(pv.row_for(1)), "│   x");
         assert_eq!(text(pv.row_for(0)), "│");
         assert_eq!(text(pv.row_for(7)), "    y");
-        // le righe ``` hanno la loro riga d'anteprima anche dentro citazioni e liste
+        // ``` rows get their own preview row inside quotes and lists too
         for code in [1, 7] {
             assert_eq!(pv.row_for(code - 1) + 1, pv.row_for(code));
             assert_eq!(pv.row_for(code + 1), pv.row_for(code) + 1);
@@ -1024,8 +1024,8 @@ mod tests {
             30,
         );
         assert!(pv[0].ends_with(" rust") && pv[4].ends_with(" python"), "{pv:?}");
-        // ripartire dalle righe iniziali già evidenziate dà lo stesso risultato che rifare tutto
-        // ("rs" è un'altra chiave di cache: non riusa nulla)
+        // resuming from already highlighted leading lines gives the same result as starting over
+        // ("rs" is a different cache key: nothing is reused)
         highlight("rust", "fn a() {\n    let s = \"x\";\n}\n");
         let code = "fn a() {\n    let s = \"x\";\n    /* c\n    d */ 1\n}\n";
         assert_eq!(highlight("rust", code).lines, highlight("rs", code).lines);
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn links_are_clickable() {
         let pv = render_markdown(
-            "# Uno\n\n## Due, tre!\n\nvai a [qui](#due-tre) o [lì](#manca) o [web](http://x.org) o [file](a.md)\n",
+            "# One\n\n## Two, three!\n\ngo to [here](#two-three) or [there](#missing) or [web](http://x.org) or [file](a.md)\n",
             60,
             None,
         );
@@ -1058,41 +1058,41 @@ mod tests {
             .iter()
             .map(|l| (l.x, l.width, l.dest.as_str(), l.target))
             .collect();
-        // i percorsi relativi non sono cliccabili
+        // relative paths are not clickable
         assert_eq!(
             l,
             [
-                (6, 3, "#due-tre", Some(2)),
-                (12, 2, "#manca", None),
-                (17, 3, "http://x.org", None)
+                (6, 4, "#two-three", Some(2)),
+                (14, 5, "#missing", None),
+                (23, 3, "http://x.org", None)
             ]
         );
-        // un link che va a capo è cliccabile su entrambe le righe
-        let pv = render_markdown("# Titolo\n\n[uno due tre](#titolo)\n", 8, None);
+        // a link that wraps is clickable on both lines
+        let pv = render_markdown("# Title\n\n[one two three](#title)\n", 8, None);
         let l: Vec<_> = pv
             .links
             .iter()
             .map(|l| (l.line - pv.links[0].line, l.x, l.width, l.target, l.id))
             .collect();
-        assert_eq!(l, [(0, 0, 7, Some(0), 0), (1, 0, 3, Some(0), 0)]);
+        assert_eq!(l, [(0, 0, 7, Some(0), 0), (1, 0, 5, Some(0), 0)]);
     }
 
     #[test]
     fn big_headings() {
-        // H1 largo: 8 celle per lettera, 4 righe
+        // wide H1: 8 cells per letter, 4 rows
         let out = plain("# Ab\n", 80);
         assert_eq!(out.len(), 5);
         assert!(out[..4].iter().all(|r| r.chars().count() == 16));
         assert!(out[0].contains('█') || out[0].contains('▀') || out[0].contains('▄'));
-        // H1 in spazio stretto → versione compatta da 4 celle
+        // H1 in a narrow space → compact 4-cell version
         let out = render_markdown("# Abcdef\n", 30, None).lines;
         assert_eq!(out[0].spans[0].content.chars().count(), 24);
-        // H2 compatto, H3 testo normale
+        // compact H2, H3 as normal text
         let out = plain("## Ab\n", 80);
         assert_eq!(out.len(), 5);
         assert_eq!(out[0].chars().count(), 8);
         assert_eq!(plain("### Ab\n", 80), ["Ab", ""]);
-        // titolo che non entra nemmeno compatto → testo normale
-        assert_eq!(plain("# Titolo\n", 7)[0], "Titolo");
+        // heading that does not fit even compact → normal text
+        assert_eq!(plain("# Title\n", 7)[0], "Title");
     }
 }

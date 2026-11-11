@@ -30,14 +30,14 @@ enum View {
     Split,
 }
 
-/// Pezzo di link cliccabile visibile nell'anteprima, in coordinate dello schermo.
+/// Piece of a clickable link visible in the preview, in screen coordinates.
 #[derive(Clone)]
 struct ScreenLink {
     rect: Rect,
-    /// stesso id = stesso link (anche se va a capo)
+    /// same id = same link (even when it wraps)
     id: usize,
     dest: String,
-    /// link interni: (riga sorgente, riga d'anteprima) del titolo di destinazione
+    /// internal links: (source row, preview row) of the target heading
     target: Option<(usize, usize)>,
 }
 
@@ -47,31 +47,31 @@ struct App<'a> {
     view: View,
     side_by_side: bool,
     preview_scroll: usize,
-    /// prima riga visibile e altezza dell'editor. tui-textarea non le espone: le ricalcoliamo con la
-    /// sua stessa regola (scorre il minimo per tenere visibile il cursore), vedi `next_scroll_top`
+    /// first visible row and height of the editor. tui-textarea does not expose them: we recompute them
+    /// with its own rule (scroll as little as needed to keep the cursor visible), see `next_scroll_top`
     editor_top: usize,
     editor_h: usize,
-    /// prima colonna visibile (scorrimento orizzontale delle righe lunghe), stessa regola di `editor_top`
+    /// first visible column (horizontal scrolling of long lines), same rule as `editor_top`
     editor_left: usize,
-    /// area del testo nell'editor e nell'anteprima nell'ultimo disegno, per il mouse
+    /// text area of the editor and the preview in the last frame, for the mouse
     editor_inner: Rect,
     preview_inner: Option<Rect>,
     links: Vec<ScreenLink>,
-    /// posizione del mouse, per evidenziare il link sotto il puntatore
+    /// mouse position, to highlight the link under the pointer
     hover: Option<Position>,
-    /// link esterno in attesa di conferma prima di aprirlo nel browser
+    /// external link waiting for confirmation before opening it in the browser
     confirm: Option<String>,
-    /// selezione col mouse in corso (tasto sinistro premuto nell'editor)
+    /// mouse selection in progress (left button pressed in the editor)
     dragging: bool,
     images: Images,
-    /// a capo del file: "\r\n" (CRLF, Windows) o "\n" (LF); mantenuto al salvataggio
+    /// line ending of the file: "\r\n" (CRLF, Windows) or "\n" (LF); kept when saving
     eol: &'static str,
     dirty: bool,
     quit_armed: bool,
     status: String,
 }
 
-/// Stessa regola di tui-textarea: la vista si sposta solo quando il cursore esce dallo schermo.
+/// Same rule as tui-textarea: the view moves only when the cursor leaves the screen.
 fn next_scroll_top(prev_top: usize, cursor: usize, len: usize) -> usize {
     if cursor < prev_top {
         cursor
@@ -115,15 +115,15 @@ fn main() -> io::Result<()> {
     editor.set_cursor_line_style(Style::default());
 
     let mut terminal = ratatui::init();
-    // il mouse lo gestiamo noi: così la selezione resta dentro l'editor invece di attraversare lo schermo
+    // we handle the mouse ourselves, so the selection stays inside the editor instead of spanning the screen
     execute!(io::stdout(), EnableMouseCapture)?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(io::stdout(), DisableMouseCapture);
         hook(info);
     }));
-    // chiede al terminale protocollo grafico (sixel, kitty, iTerm2) e dimensione dei caratteri;
-    // senza risposta si ripiega sui mezzi blocchi colorati
+    // ask the terminal for its graphics protocol (sixel, kitty, iTerm2) and font size;
+    // without an answer, fall back to colored half blocks
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let base = Path::new(&path)
         .parent()
@@ -147,7 +147,7 @@ fn main() -> io::Result<()> {
         confirm: None,
         dragging: false,
         images,
-        // ponytail: con a capo misti vince CRLF se ce n'è almeno uno
+        // ponytail: with mixed line endings, CRLF wins if there is at least one
         eol: if text.contains("\r\n") { "\r\n" } else { "\n" },
         dirty: false,
         quit_armed: false,

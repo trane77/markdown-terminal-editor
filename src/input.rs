@@ -1,4 +1,4 @@
-//! Tastiera e mouse: comandi, selezione confinata all'editor, link interni, appunti.
+//! Keyboard and mouse: commands, selection confined to the editor, links, clipboard.
 
 use std::{
     env,
@@ -31,7 +31,7 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        // finché il dialogo di conferma è aperto conta solo Enter (apri) o Esc (annulla)
+        // while the confirmation dialog is open, only Enter (open) or Esc (cancel) count
         if let Some(url) = app.confirm.take() {
             match key.code {
                 KeyCode::Enter => open_url(app, &url),
@@ -60,7 +60,7 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             (true, KeyCode::Char('e')) => app.view = View::Editor,
             (true, KeyCode::Char('p')) => app.view = View::Preview,
             (true, KeyCode::Char('l')) => {
-                // Ctrl+L entra nello split; se già in split, alterna affiancato / sovrapposto
+                // Ctrl+L enters split view; if already split, toggles side-by-side / stacked
                 if app.view == View::Split {
                     app.side_by_side = !app.side_by_side;
                 }
@@ -74,8 +74,8 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
                 KeyCode::Home => app.preview_scroll = 0,
                 _ => {}
             },
-            // tui-textarea farebbe scorrere la vista senza muovere il cursore, rendendo `editor_top`
-            // impossibile da ricalcolare: spostiamo invece il cursore di una pagina
+            // tui-textarea would scroll the view without moving the cursor, making `editor_top`
+            // impossible to recompute: move the cursor by one page instead
             (_, KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('v'))
                 if key.code != KeyCode::Char('v') || ctrl || alt =>
             {
@@ -89,7 +89,7 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
                 if app.editor.input(key) {
                     app.dirty = true;
                 }
-                // Ctrl+C / Ctrl+X: oltre agli appunti interni dell'editor, anche quelli di sistema
+                // Ctrl+C / Ctrl+X: besides the editor's internal clipboard, also the system one
                 if ctrl && matches!(key.code, KeyCode::Char('c' | 'x')) {
                     copy_to_clipboard(&app.editor.yank_text());
                 }
@@ -107,7 +107,7 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     match m.kind {
-        // la rotellina sposta il cursore (o l'anteprima da sola): la vista dell'editor segue il cursore
+        // the wheel moves the cursor (or the preview when shown alone): the editor view follows the cursor
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
             let down = m.kind == MouseEventKind::ScrollDown;
             if app.view == View::Preview {
@@ -141,7 +141,7 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left) if app.dragging => jump_to(app, pos),
         MouseEventKind::Up(MouseButton::Left) if app.dragging => {
             app.dragging = false;
-            // semplice clic: nessuna selezione
+            // plain click: no selection
             if app.editor.selection_range().is_some_and(|(a, b)| a == b) {
                 app.editor.cancel_selection();
             }
@@ -150,14 +150,14 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
     }
 }
 
-/// Porta al titolo di un link interno: in cima all'editor (e all'anteprima, se è da sola).
+/// Jumps to the heading of an internal link: at the top of the editor (and of the preview, if alone).
 fn follow_link(app: &mut App, dest: &str, target: Option<(usize, usize)>) {
     let Some((line, row)) = target else {
         app.status = format!("{}: {dest}", tr().no_anchor);
         return;
     };
     app.editor.cancel_selection();
-    // scorre la vista di tui-textarea insieme alla nostra copia `editor_top`, poi ci mette il cursore
+    // scroll tui-textarea's view together with our copy `editor_top`, then put the cursor there
     let delta = line as i64 - app.editor_top as i64;
     app.editor
         .scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
@@ -167,9 +167,9 @@ fn follow_link(app: &mut App, dest: &str, target: Option<(usize, usize)>) {
     app.preview_scroll = row;
 }
 
-/// Apre un link esterno nel browser predefinito, senza bloccare l'editor.
+/// Opens an external link in the default browser without blocking the editor.
 fn open_url(app: &mut App, url: &str) {
-    // su WSL il browser è quello di Windows
+    // on WSL the browser is the Windows one
     let cmds: &[&str] = if env::var_os("WSL_DISTRO_NAME").is_some() {
         &["wslview", "explorer.exe", "xdg-open"]
     } else {
@@ -184,14 +184,14 @@ fn open_url(app: &mut App, url: &str) {
         cmd.spawn().ok()
     });
     match child {
-        // attende in un thread a parte, così il processo terminato non resta zombie
+        // wait on a separate thread, so the finished process does not linger as a zombie
         Some(mut c) => drop(std::thread::spawn(move || c.wait())),
         None => app.status = format!("{}: {url}", tr().open_error),
     }
 }
 
-/// Porta il cursore sotto il mouse. Fuori dall'editor si ferma al bordo: oltre quello in alto o in
-/// basso va una riga più in là, così trascinando fuori la vista scorre.
+/// Moves the cursor under the mouse. Outside the editor it stops at the border; past the top or
+/// bottom border it goes one row further, so dragging outside scrolls the view.
 fn jump_to(app: &mut App, pos: Position) {
     let r = app.editor_inner;
     let row = if pos.y < r.y {
@@ -208,7 +208,7 @@ fn jump_to(app: &mut App, pos: Position) {
     ));
 }
 
-/// Copia negli appunti di sistema con la sequenza OSC 52 (Windows Terminal, kitty, WezTerm, iTerm2, ...).
+/// Copies to the system clipboard with the OSC 52 sequence (Windows Terminal, kitty, WezTerm, iTerm2, ...).
 fn copy_to_clipboard(text: &str) {
     if text.is_empty() {
         return;

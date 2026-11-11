@@ -1,8 +1,8 @@
-//! Testi dell'interfaccia nelle varie lingue, scelti dal locale.
+//! UI texts in several languages, picked from the locale.
 
 use std::{env, sync::OnceLock};
 
-/// Testi dell'interfaccia in una lingua.
+/// UI texts in one language.
 pub(crate) struct Tr {
     pub(crate) saved: &'static str,
     pub(crate) save_error: &'static str,
@@ -143,7 +143,7 @@ const IT: Tr = Tr {
     open_error: "Impossibile aprire il browser",
 };
 
-/// Lingua dal locale POSIX (LC_ALL > LC_MESSAGES > LANG, es. "de_DE.UTF-8"); inglese se assente o non tradotta.
+/// Language from the POSIX locale (LC_ALL > LC_MESSAGES > LANG, e.g. "de_DE.UTF-8"); English if unset or untranslated.
 fn lang(locale: &str) -> &'static Tr {
     match locale.get(..2) {
         Some("es") => &ES,

@@ -1,4 +1,4 @@
-//! Disegno dello schermo: editor, anteprima sincronizzata, scrollbar, barra di stato.
+//! Screen drawing: editor, synced preview, scrollbars, status bar.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -43,7 +43,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             app.editor_inner.width.max(1) as usize,
         );
         f.render_widget(&app.editor, area);
-        // sempre sul bordo destro dell'editor: nello split affiancato è il bordo in mezzo ai due riquadri
+        // always on the editor's right border: in the side-by-side split it is the border between the panes
         scrollbar(f, area, app.editor.lines().len(), app.editor_top, app.editor_h);
     }
 
@@ -54,13 +54,13 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         let inner = block.inner(area);
         app.preview_inner = Some(inner);
         f.render_widget(block, area);
-        // ponytail: ri-parsa tutto il documento a ogni frame; cache sul testo se diventa lento con file enormi
+        // ponytail: re-parses the whole document every frame; cache on the text if huge files get slow
         app.images.max_rows = (inner.height / 2).max(3);
         let pv = render_markdown(&app.editor.lines().join("\n"), inner.width, Some(&mut app.images));
         let mut pad = 0;
         if app.view == View::Split {
-            // la riga d'anteprima della riga col cursore va alla stessa altezza dello schermo del cursore;
-            // se sopra non c'è abbastanza contenuto, si sposta l'anteprima in basso
+            // the preview row of the cursor's line goes at the cursor's screen height;
+            // if there is not enough content above, the preview is shifted down
             let target = (cursor_row - app.editor_top).min((inner.height as usize).saturating_sub(1));
             let row = pv.row_for(cursor_row);
             app.preview_scroll = row.saturating_sub(target);
@@ -99,7 +99,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             .take(content.height as usize)
             .collect::<Vec<_>>();
         f.render_widget(Paragraph::new(lines), content);
-        // link sotto il mouse, in tutti i suoi pezzi: azzurro se interno, fucsia se apre il browser
+        // link under the mouse, in all its pieces: light blue if internal, magenta if it opens the browser
         if let Some(hl) = app.hover.and_then(|h| app.links.iter().find(|l| l.rect.contains(h))) {
             let color = if hl.dest.starts_with('#') {
                 Color::LightBlue
@@ -110,7 +110,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                 f.buffer_mut().set_style(l.rect, Style::new().fg(color));
             }
         }
-        // immagini sopra le righe riservate; di quelle tagliate dallo scorrimento si disegna solo la parte visibile
+        // images over their reserved rows; for those cut by scrolling, only the visible part is drawn
         for slot in &pv.images {
             let (first, last) = (slot.line, slot.line + slot.rows as usize);
             let (from, to) = (first.max(top), last.min(top + h));
@@ -127,7 +127,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                 f.render_widget(Image::new(p), rect);
             }
         }
-        // nello split affiancato basta la scrollbar dell'editor in mezzo: i due riquadri scorrono insieme
+        // in the side-by-side split the editor's scrollbar in the middle is enough: both panes scroll together
         if !(app.view == View::Split && app.side_by_side) {
             scrollbar(f, area, total, app.preview_scroll, inner.height as usize);
         }
@@ -165,9 +165,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// Scrollbar disegnata sopra il bordo destro di `area` (riquadro con bordi).
+/// Scrollbar drawn over the right border of `area` (a bordered pane).
 fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
-    // ratatui vuole il numero di posizioni di scorrimento: con `top` all'ultima la barra tocca il fondo
+    // ratatui wants the number of scroll positions: with `top` at the last one the thumb reaches the bottom
     let mut state = ScrollbarState::new(total.saturating_sub(view) + 1)
         .position(top)
         .viewport_content_length(view);
@@ -185,7 +185,7 @@ fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
     );
 }
 
-/// Riquadro centrato che chiede se aprire `url` nel browser.
+/// Centered dialog asking whether to open `url` in the browser.
 fn confirm_dialog(f: &mut Frame, url: &str) {
     let t = tr();
     let area = f.area();
@@ -201,7 +201,7 @@ fn confirm_dialog(f: &mut Frame, url: &str) {
         .title(" Link ")
         .padding(Padding::horizontal(1));
     let para = Paragraph::new(text).block(block).centered().wrap(Wrap { trim: false });
-    // altezza esatta dopo l'a capo di domanda e indirizzo, bordi compresi
+    // exact height after wrapping the question and the address, borders included
     let w = area.width.saturating_sub(4).min(70);
     let h = (para.line_count(w) as u16).min(area.height);
     let rect = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);

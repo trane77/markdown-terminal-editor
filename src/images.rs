@@ -1,4 +1,4 @@
-//! Immagini dell'anteprima: lettura, misura in celle, codifica per il terminale.
+//! Preview images: loading, sizing in cells, encoding for the terminal.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -14,14 +14,14 @@ pub(crate) struct ImageSlot {
     pub(crate) path: PathBuf,
 }
 
-/// Immagini dell'anteprima: lettura, misura in celle e codifica per il terminale, con cache.
+/// Preview images: loading, sizing in cells and encoding for the terminal, with caches.
 pub(crate) struct Images {
     pub(crate) picker: Picker,
-    /// cartella del file .md: i percorsi relativi delle immagini partono da qui
+    /// directory of the .md file: relative image paths start here
     base: PathBuf,
-    /// altezza massima di un'immagine, in righe
+    /// maximum height of an image, in rows
     pub(crate) max_rows: u16,
-    // ponytail: le cache non si aggiornano se un'immagine cambia su disco; serve riavviare l'editor
+    // ponytail: caches are not refreshed when an image changes on disk; restart the editor
     decoded: HashMap<PathBuf, Option<DynamicImage>>,
     resized: HashMap<(PathBuf, u16, u16), DynamicImage>,
     protocols: HashMap<(PathBuf, u16, u16, u16, u16), Protocol>,
@@ -39,8 +39,8 @@ impl Images {
         }
     }
 
-    /// Celle (colonne, righe) occupate dall'immagine `dest` entro `width` colonne, rispettando le
-    /// proporzioni. None se non è un file locale leggibile (remota, mancante, formato non supportato).
+    /// Cells (columns, rows) taken by image `dest` within `width` columns, keeping its aspect ratio.
+    /// None if it is not a readable local file (remote, missing, unsupported format).
     pub(crate) fn size(&mut self, dest: &str, width: u16) -> Option<(PathBuf, u16, u16)> {
         if dest.contains("://") || width == 0 {
             return None;
@@ -62,12 +62,12 @@ impl Images {
         Some((path, cols as u16, rows as u16))
     }
 
-    /// Immagine codificata per il terminale, limitata alle righe `skip..skip + take`: le altre sono
-    /// fuori dallo schermo. Ritagliare l'immagine stessa funziona con ogni protocollo, sixel compreso.
+    /// Image encoded for the terminal, limited to rows `skip..skip + take`: the others are off screen.
+    /// Cropping the image itself works with every protocol, sixel included.
     pub(crate) fn protocol(&mut self, slot: &ImageSlot, skip: u16, take: u16) -> Option<&Protocol> {
         let key = (slot.path.clone(), slot.cols, slot.rows, skip, take);
         if !self.protocols.contains_key(&key) {
-            // ponytail: svuota tutto oltre una soglia; un LRU se lo scorrimento tra molte immagini rallenta
+            // ponytail: clears everything past a threshold; use an LRU if scrolling through many images gets slow
             if self.protocols.len() > 64 {
                 self.protocols.clear();
             }

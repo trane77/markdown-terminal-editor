@@ -405,22 +405,22 @@ brackets, followed by the path in parentheses.
 
 A wide image (PNG), scaled down to the pane width:
 
-![Panorama con sole e colline](img/panorama.png)
+![Panorama with sun and hills](img/panorama.png)
 
 A tall image (JPEG), limited in height:
 
-![Strisce colorate](img/strisce.jpg "Strisce")
+![Colored stripes](img/stripes.jpg "Stripes")
 
 Text before ![inline](img/panorama.png) and after an image in the same paragraph.
 
 - A list item with an image:
 
-  ![Panorama nella lista](img/panorama.png)
+  ![Panorama in a list](img/panorama.png)
 
 > A blockquote with an image:
 >
-> ![Strisce nella citazione](img/strisce.jpg)
+> ![Stripes in a quote](img/stripes.jpg)
 
-A missing file shows only its alt text: ![File mancante](img/non-esiste.png)
+A missing file shows only its alt text: ![Missing file](img/does-not-exist.png)
 
-A remote image shows only its alt text: ![Logo remoto](https://example.com/logo.png)
+A remote image shows only its alt text: ![Remote logo](https://example.com/logo.png)
