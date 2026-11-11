@@ -4,6 +4,7 @@ use std::{
     env,
     io::{self, Write},
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use ratatui::{
@@ -15,11 +16,20 @@ use ratatui::{
 };
 use tui_textarea::CursorMove;
 
-use crate::{draw, i18n::tr, App, View};
+use crate::{draw, i18n::tr, App, Dialog, View};
 
 pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+    let mut redraw = true;
     loop {
-        terminal.draw(|f| draw(f, app))?;
+        if redraw {
+            terminal.draw(|f| draw(f, app))?;
+        }
+        redraw = true;
+        // with no input for a while, check whether another program changed the file
+        if !event::poll(Duration::from_millis(500))? {
+            redraw = app.check_disk();
+            continue;
+        }
         let key = match event::read()? {
             TermEvent::Key(key) => key,
             TermEvent::Mouse(m) => {
@@ -31,30 +41,22 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        // while the confirmation dialog is open, only Enter (open) or Esc (cancel) count
-        if let Some(url) = app.confirm.take() {
-            match key.code {
-                KeyCode::Enter => open_url(app, &url),
-                KeyCode::Esc => {}
-                _ => app.confirm = Some(url),
-            }
-            continue;
-        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let is_quit = ctrl && key.code == KeyCode::Char('q');
-        if !is_quit {
-            app.quit_armed = false;
+        if let Some(dialog) = app.dialog.take() {
+            if dialog_key(app, dialog, key.code, ctrl) {
+                return Ok(());
+            }
+            continue;
         }
         app.status.clear();
 
         match (ctrl, key.code) {
             (true, KeyCode::Char('q')) => {
-                if !app.dirty || app.quit_armed {
+                if !app.dirty {
                     return Ok(());
                 }
-                app.quit_armed = true;
-                app.status = tr().unsaved.into();
+                app.dialog = Some(Dialog::Quit);
             }
             (true, KeyCode::Char('s')) => app.save(),
             (true, KeyCode::Char('e')) => app.view = View::Editor,
@@ -98,12 +100,32 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
     }
 }
 
+/// Key pressed while a dialog is open: only Enter (confirm) or Esc (cancel) count, plus Ctrl+Q when
+/// quitting; any other key leaves the dialog open. Returns true when the app must quit.
+fn dialog_key(app: &mut App, dialog: Dialog, code: KeyCode, ctrl: bool) -> bool {
+    match (dialog, code) {
+        (Dialog::Quit, KeyCode::Enter) => {
+            app.save();
+            // quit only if the save went through: not on a write error or an external change
+            return !app.dirty && app.dialog.is_none();
+        }
+        (Dialog::Quit, KeyCode::Char('q')) if ctrl => return true,
+        (Dialog::Quit, KeyCode::Esc) => {}
+        (Dialog::OpenLink(url), KeyCode::Enter) => open_url(app, &url),
+        (Dialog::OpenLink(_), KeyCode::Esc) => {}
+        (Dialog::Reload(text), KeyCode::Enter) => app.reload(text),
+        (Dialog::Reload(text), KeyCode::Esc) => app.keep_mine(text),
+        (dialog, _) => app.dialog = Some(dialog),
+    }
+    false
+}
+
 fn on_mouse(app: &mut App, m: MouseEvent) {
     let pos = Position::new(m.column, m.row);
     let r = app.editor_inner;
     let in_panes = r.contains(pos) || app.preview_inner.is_some_and(|p| p.contains(pos));
     app.hover = Some(pos);
-    if app.confirm.is_some() {
+    if app.dialog.is_some() {
         return;
     }
     match m.kind {
@@ -128,7 +150,7 @@ fn on_mouse(app: &mut App, m: MouseEvent) {
                 if l.dest.starts_with('#') {
                     follow_link(app, &l.dest, l.target);
                 } else {
-                    app.confirm = Some(l.dest);
+                    app.dialog = Some(Dialog::OpenLink(l.dest));
                 }
             }
         }
@@ -238,6 +260,46 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::images::Images;
+    use ratatui_image::picker::Picker;
+    use std::fs;
+
+    #[test]
+    fn quitting_with_unsaved_changes_asks_first() {
+        let dir = env::temp_dir().join(format!("mdedit-quit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        fs::write(&path, "old\n").unwrap();
+        let images = Images::new(Picker::halfblocks(), ".".into());
+        let mut app = App::new(path.to_string_lossy().into_owned(), "old\n".into(), images);
+        app.editor.insert_str("new ");
+        app.dirty = true;
+
+        // other keys keep the dialog open; Esc cancels without quitting
+        assert!(!dialog_key(&mut app, Dialog::Quit, KeyCode::Char('x'), false));
+        assert!(matches!(app.dialog.take(), Some(Dialog::Quit)));
+        assert!(!dialog_key(&mut app, Dialog::Quit, KeyCode::Esc, false));
+        assert!(app.dialog.is_none());
+
+        // Ctrl+Q quits without saving
+        assert!(dialog_key(&mut app, Dialog::Quit, KeyCode::Char('q'), true));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\n");
+
+        // a file changed by another program: Enter does not quit, it asks about the change first
+        fs::write(&path, "theirs, longer\n").unwrap();
+        assert!(!dialog_key(&mut app, Dialog::Quit, KeyCode::Enter, false));
+        assert!(matches!(app.dialog, Some(Dialog::Reload(_))));
+        let Some(Dialog::Reload(text)) = app.dialog.take() else {
+            unreachable!()
+        };
+        app.keep_mine(text);
+
+        // Enter saves and quits
+        assert!(dialog_key(&mut app, Dialog::Quit, KeyCode::Enter, false));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new old\n");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn base64_matches_rfc4648() {

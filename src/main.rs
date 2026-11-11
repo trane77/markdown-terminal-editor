@@ -4,7 +4,7 @@ mod input;
 mod markdown;
 mod ui;
 
-use std::{env, fs, io, path::Path};
+use std::{env, fs, io, path::Path, time::SystemTime};
 
 use ratatui::{
     crossterm::{
@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use ratatui_image::picker::Picker;
-use tui_textarea::TextArea;
+use tui_textarea::{CursorMove, TextArea};
 
 use i18n::tr;
 use images::Images;
@@ -41,6 +41,45 @@ struct ScreenLink {
     target: Option<(usize, usize)>,
 }
 
+/// Modal dialog shown over the screen; while open, it takes all keys.
+enum Dialog {
+    /// open this external link in the browser?
+    OpenLink(String),
+    /// the file changed on disk: reload it (new content attached) or keep the editor's version?
+    Reload(String),
+    /// quitting with unsaved changes: save first, quit anyway or cancel?
+    Quit,
+}
+
+/// What identifies a file version on disk without reading it: modification time and size.
+type DiskStamp = Option<(SystemTime, u64)>;
+
+fn disk_stamp(path: &str) -> DiskStamp {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+fn new_editor<'a>(text: &str) -> TextArea<'a> {
+    let mut editor = TextArea::from(text.lines());
+    editor.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", tr().editor)),
+    );
+    editor.set_cursor_line_style(Style::default());
+    editor
+}
+
+/// "\r\n" if the text uses CRLF line endings, "\n" otherwise.
+fn detect_eol(text: &str) -> &'static str {
+    // ponytail: with mixed line endings, CRLF wins if there is at least one
+    if text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
 struct App<'a> {
     path: String,
     editor: TextArea<'a>,
@@ -59,15 +98,16 @@ struct App<'a> {
     links: Vec<ScreenLink>,
     /// mouse position, to highlight the link under the pointer
     hover: Option<Position>,
-    /// external link waiting for confirmation before opening it in the browser
-    confirm: Option<String>,
+    dialog: Option<Dialog>,
+    /// the file as we last read or wrote it, to notice when another program changes it
+    disk: DiskStamp,
+    disk_text: String,
     /// mouse selection in progress (left button pressed in the editor)
     dragging: bool,
     images: Images,
     /// line ending of the file: "\r\n" (CRLF, Windows) or "\n" (LF); kept when saving
     eol: &'static str,
     dirty: bool,
-    quit_armed: bool,
     status: String,
 }
 
@@ -83,16 +123,103 @@ fn next_scroll_top(prev_top: usize, cursor: usize, len: usize) -> usize {
 }
 
 impl App<'_> {
-    fn save(&mut self) {
+    fn new(path: String, text: String, images: Images) -> Self {
+        App {
+            disk: disk_stamp(&path),
+            editor: new_editor(&text),
+            path,
+            view: View::Split,
+            side_by_side: true,
+            preview_scroll: 0,
+            editor_top: 0,
+            editor_h: 1,
+            editor_left: 0,
+            editor_inner: Rect::default(),
+            preview_inner: None,
+            links: Vec::new(),
+            hover: None,
+            dialog: None,
+            dragging: false,
+            images,
+            eol: detect_eol(&text),
+            disk_text: text,
+            dirty: false,
+            status: String::new(),
+        }
+    }
+
+    /// The editor's text as it would be written to disk.
+    fn contents(&self) -> String {
         let mut text = self.editor.lines().join(self.eol);
         text.push_str(self.eol);
-        match fs::write(&self.path, text) {
+        text
+    }
+
+    fn save(&mut self) {
+        // never overwrite changes made by another program without asking
+        if self.check_disk() {
+            return;
+        }
+        let text = self.contents();
+        match fs::write(&self.path, &text) {
             Ok(()) => {
+                self.disk = disk_stamp(&self.path);
+                self.disk_text = text;
                 self.dirty = false;
                 self.status = tr().saved.into();
             }
             Err(e) => self.status = format!("{}: {e}", tr().save_error),
         }
+    }
+
+    /// Opens the reload dialog if another program changed the file since we last read or wrote it.
+    /// Returns true when it did. A changed timestamp with the same content is ignored, and so is a
+    /// file that was deleted or cannot be read (saving recreates it).
+    fn check_disk(&mut self) -> bool {
+        if self.dialog.is_some() {
+            return false;
+        }
+        let stamp = disk_stamp(&self.path);
+        if stamp == self.disk {
+            return false;
+        }
+        self.disk = stamp;
+        let Ok(text) = fs::read_to_string(&self.path) else {
+            return false;
+        };
+        if text == self.disk_text {
+            return false;
+        }
+        if text == self.contents() {
+            // the other program wrote exactly what the editor holds
+            self.disk_text = text;
+            self.dirty = false;
+            return false;
+        }
+        self.dialog = Some(Dialog::Reload(text));
+        true
+    }
+
+    /// Replaces the editor's text with the file's new content, keeping the cursor where it was.
+    fn reload(&mut self, text: String) {
+        let (row, col) = self.editor.cursor();
+        self.editor = new_editor(&text);
+        // the new textarea starts scrolled to the top: reset our copy of its viewport too
+        (self.editor_top, self.editor_left) = (0, 0);
+        self.editor.move_cursor(CursorMove::Jump(
+            row.min(u16::MAX as usize) as u16,
+            col.min(u16::MAX as usize) as u16,
+        ));
+        self.eol = detect_eol(&text);
+        self.disk_text = text;
+        self.dirty = false;
+        self.status = tr().reloaded.into();
+    }
+
+    /// Keeps the editor's version: it now differs from the file, so it counts as unsaved.
+    fn keep_mine(&mut self, text: String) {
+        self.disk_text = text;
+        self.dirty = true;
     }
 }
 
@@ -106,14 +233,6 @@ fn main() -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let mut editor = TextArea::from(text.lines());
-    editor.set_block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", tr().editor)),
-    );
-    editor.set_cursor_line_style(Style::default());
-
     let mut terminal = ratatui::init();
     // we handle the mouse ourselves, so the selection stays inside the editor instead of spanning the screen
     execute!(io::stdout(), EnableMouseCapture)?;
@@ -131,30 +250,68 @@ fn main() -> io::Result<()> {
         .unwrap_or(Path::new("."));
     let images = Images::new(picker, base.to_path_buf());
 
-    let mut app = App {
-        path,
-        editor,
-        view: View::Split,
-        side_by_side: true,
-        preview_scroll: 0,
-        editor_top: 0,
-        editor_h: 1,
-        editor_left: 0,
-        editor_inner: Rect::default(),
-        preview_inner: None,
-        links: Vec::new(),
-        hover: None,
-        confirm: None,
-        dragging: false,
-        images,
-        // ponytail: with mixed line endings, CRLF wins if there is at least one
-        eol: if text.contains("\r\n") { "\r\n" } else { "\n" },
-        dirty: false,
-        quit_armed: false,
-        status: String::new(),
-    };
+    let mut app = App::new(path, text, images);
     let res = run(&mut terminal, &mut app);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_for(path: &Path, text: &str) -> App<'static> {
+        fs::write(path, text).unwrap();
+        let images = Images::new(Picker::halfblocks(), ".".into());
+        App::new(path.to_string_lossy().into_owned(), text.into(), images)
+    }
+
+    #[test]
+    fn external_changes_ask_before_reloading_or_overwriting() {
+        let dir = env::temp_dir().join(format!("mdedit-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+
+        // nothing changed: no dialog
+        let mut app = app_for(&path, "one\ntwo\n");
+        assert!(!app.check_disk());
+
+        // same content with a new timestamp (e.g. `touch`): still no dialog
+        let file = fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!app.check_disk());
+
+        // another program changes the file: reloading takes its content and keeps the cursor row
+        app.editor.move_cursor(CursorMove::Jump(1, 0));
+        fs::write(&path, "one\nTWO\nthree\n").unwrap();
+        assert!(app.check_disk());
+        let Some(Dialog::Reload(text)) = app.dialog.take() else {
+            panic!("no reload dialog")
+        };
+        app.reload(text);
+        assert_eq!(app.editor.lines(), ["one", "TWO", "three"]);
+        assert_eq!(app.editor.cursor().0, 1);
+        assert!(!app.dirty);
+
+        // saving after an external change asks first and leaves the file alone
+        fs::write(&path, "theirs\n").unwrap();
+        app.save();
+        assert!(matches!(app.dialog, Some(Dialog::Reload(_))));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
+
+        // keeping our version marks it unsaved; the next save writes it
+        let Some(Dialog::Reload(text)) = app.dialog.take() else {
+            panic!("no reload dialog")
+        };
+        app.keep_mine(text);
+        assert!(app.dirty);
+        app.save();
+        assert!(app.dialog.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "one\nTWO\nthree\n");
+        assert!(!app.check_disk());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

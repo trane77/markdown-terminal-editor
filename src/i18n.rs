@@ -8,6 +8,8 @@ pub(crate) struct Tr {
     pub(crate) save_error: &'static str,
     pub(crate) usage: &'static str,
     pub(crate) unsaved: &'static str,
+    pub(crate) save_quit: &'static str,
+    pub(crate) quit_anyway: &'static str,
     pub(crate) editor: &'static str,
     pub(crate) preview: &'static str,
     pub(crate) preview_keys: &'static str,
@@ -21,13 +23,19 @@ pub(crate) struct Tr {
     pub(crate) ok: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) open_error: &'static str,
+    pub(crate) changed_on_disk: &'static str,
+    pub(crate) reload: &'static str,
+    pub(crate) keep: &'static str,
+    pub(crate) reloaded: &'static str,
 }
 
 const EN: Tr = Tr {
     saved: "Saved",
     save_error: "Error saving file",
     usage: "usage",
-    unsaved: "Unsaved changes! Press Ctrl+Q again to quit without saving",
+    unsaved: "The file has unsaved changes. Save them before quitting?",
+    save_quit: "Save and quit",
+    quit_anyway: "Quit without saving",
     editor: "Editor",
     preview: "Preview",
     preview_keys: "↑↓ PgUp PgDn",
@@ -41,13 +49,19 @@ const EN: Tr = Tr {
     ok: "OK",
     cancel: "Cancel",
     open_error: "Cannot open the browser",
+    changed_on_disk: "The file was changed by another program. Reload it from disk? Changes made here will be lost.",
+    reload: "Reload",
+    keep: "Keep my version",
+    reloaded: "Reloaded from disk",
 };
 
 const ES: Tr = Tr {
     saved: "Guardado",
     save_error: "Error al guardar",
     usage: "uso",
-    unsaved: "¡Cambios sin guardar! Pulsa Ctrl+Q otra vez para salir sin guardar",
+    unsaved: "El archivo tiene cambios sin guardar. ¿Guardarlos antes de salir?",
+    save_quit: "Guardar y salir",
+    quit_anyway: "Salir sin guardar",
     editor: "Editor",
     preview: "Vista previa",
     preview_keys: "↑↓ RePág AvPág",
@@ -61,13 +75,20 @@ const ES: Tr = Tr {
     ok: "Aceptar",
     cancel: "Cancelar",
     open_error: "No se puede abrir el navegador",
+    changed_on_disk:
+        "Otro programa ha modificado el archivo. ¿Recargarlo desde el disco? Se perderán los cambios hechos aquí.",
+    reload: "Recargar",
+    keep: "Mantener mi versión",
+    reloaded: "Recargado desde el disco",
 };
 
 const DE: Tr = Tr {
     saved: "Gespeichert",
     save_error: "Fehler beim Speichern",
     usage: "Verwendung",
-    unsaved: "Ungespeicherte Änderungen! Erneut Strg+Q zum Beenden ohne Speichern",
+    unsaved: "Die Datei hat ungespeicherte Änderungen. Vor dem Beenden speichern?",
+    save_quit: "Speichern und beenden",
+    quit_anyway: "Ohne Speichern beenden",
     editor: "Editor",
     preview: "Vorschau",
     preview_keys: "↑↓ Bild↑ Bild↓",
@@ -81,13 +102,19 @@ const DE: Tr = Tr {
     ok: "OK",
     cancel: "Abbrechen",
     open_error: "Browser kann nicht geöffnet werden",
+    changed_on_disk: "Die Datei wurde von einem anderen Programm geändert. Von der Festplatte neu laden? Die hier gemachten Änderungen gehen verloren.",
+    reload: "Neu laden",
+    keep: "Meine Version behalten",
+    reloaded: "Von der Festplatte neu geladen",
 };
 
 const PT: Tr = Tr {
     saved: "Guardado",
     save_error: "Erro ao guardar",
     usage: "uso",
-    unsaved: "Alterações não guardadas! Prima Ctrl+Q outra vez para sair sem guardar",
+    unsaved: "O ficheiro tem alterações não guardadas. Guardá-las antes de sair?",
+    save_quit: "Guardar e sair",
+    quit_anyway: "Sair sem guardar",
     editor: "Editor",
     preview: "Pré-visualização",
     preview_keys: "↑↓ PgUp PgDn",
@@ -101,13 +128,20 @@ const PT: Tr = Tr {
     ok: "OK",
     cancel: "Cancelar",
     open_error: "Não é possível abrir o navegador",
+    changed_on_disk:
+        "O ficheiro foi alterado por outro programa. Recarregá-lo do disco? As alterações feitas aqui serão perdidas.",
+    reload: "Recarregar",
+    keep: "Manter a minha versão",
+    reloaded: "Recarregado do disco",
 };
 
 const FR: Tr = Tr {
     saved: "Enregistré",
     save_error: "Erreur d'enregistrement",
     usage: "usage",
-    unsaved: "Modifications non enregistrées ! Ctrl+Q à nouveau pour quitter sans enregistrer",
+    unsaved: "Le fichier contient des modifications non enregistrées. Les enregistrer avant de quitter ?",
+    save_quit: "Enregistrer et quitter",
+    quit_anyway: "Quitter sans enregistrer",
     editor: "Éditeur",
     preview: "Aperçu",
     preview_keys: "↑↓ PgPréc PgSuiv",
@@ -121,13 +155,19 @@ const FR: Tr = Tr {
     ok: "OK",
     cancel: "Annuler",
     open_error: "Impossible d'ouvrir le navigateur",
+    changed_on_disk: "Le fichier a été modifié par un autre programme. Le recharger depuis le disque ? Les modifications faites ici seront perdues.",
+    reload: "Recharger",
+    keep: "Garder ma version",
+    reloaded: "Rechargé depuis le disque",
 };
 
 const IT: Tr = Tr {
     saved: "Salvato",
     save_error: "Errore nel salvataggio",
     usage: "uso",
-    unsaved: "Modifiche non salvate! Ctrl+Q di nuovo per uscire senza salvare",
+    unsaved: "Il file ha modifiche non salvate. Salvarle prima di uscire?",
+    save_quit: "Salva ed esci",
+    quit_anyway: "Esci senza salvare",
     editor: "Editor",
     preview: "Anteprima",
     preview_keys: "↑↓ PgSu PgGiù",
@@ -141,6 +181,10 @@ const IT: Tr = Tr {
     ok: "OK",
     cancel: "Annulla",
     open_error: "Impossibile aprire il browser",
+    changed_on_disk: "Il file è stato modificato da un altro programma. Ricaricarlo dal disco? Le modifiche fatte qui andranno perse.",
+    reload: "Ricarica",
+    keep: "Mantieni la mia versione",
+    reloaded: "Ricaricato dal disco",
 };
 
 /// Language from the POSIX locale (LC_ALL > LC_MESSAGES > LANG, e.g. "de_DE.UTF-8"); English if unset or untranslated.

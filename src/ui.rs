@@ -9,7 +9,7 @@ use ratatui::{
 };
 use ratatui_image::Image;
 
-use crate::{i18n::tr, markdown::render_markdown, next_scroll_top, App, ScreenLink, View};
+use crate::{i18n::tr, markdown::render_markdown, next_scroll_top, App, Dialog, ScreenLink, View};
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
@@ -160,8 +160,41 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let bar = Style::new().add_modifier(Modifier::REVERSED);
     f.render_widget(Paragraph::new(text).style(bar), left);
     f.render_widget(Paragraph::new(pos).style(bar), right);
-    if let Some(url) = &app.confirm {
-        confirm_dialog(f, url);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    match &app.dialog {
+        Some(Dialog::OpenLink(url)) => confirm_dialog(
+            f,
+            " Link ",
+            vec![
+                Line::from(t.open_link),
+                Line::default(),
+                Line::styled(url.as_str(), Style::new().fg(Color::Magenta)),
+                Line::default(),
+                Line::from(format!("Enter {}   Esc {}", t.ok, t.cancel)).style(bold),
+            ],
+        ),
+        Some(Dialog::Reload(_)) => confirm_dialog(
+            f,
+            &format!(" {} ", app.path),
+            vec![
+                Line::from(t.changed_on_disk),
+                Line::default(),
+                Line::from(format!("Enter {}   Esc {}", t.reload, t.keep)).style(bold),
+            ],
+        ),
+        Some(Dialog::Quit) => confirm_dialog(
+            f,
+            &format!(" {} ", app.path),
+            vec![
+                Line::from(t.unsaved),
+                Line::default(),
+                // one option per line: three of them do not fit on one line in most languages
+                Line::from(format!("Enter  {}", t.save_quit)).style(bold),
+                Line::from(format!("^Q  {}", t.quit_anyway)).style(bold),
+                Line::from(format!("Esc  {}", t.cancel)).style(bold),
+            ],
+        ),
+        None => {}
     }
 }
 
@@ -185,20 +218,12 @@ fn scrollbar(f: &mut Frame, area: Rect, total: usize, top: usize, view: usize) {
     );
 }
 
-/// Centered dialog asking whether to open `url` in the browser.
-fn confirm_dialog(f: &mut Frame, url: &str) {
-    let t = tr();
+/// Centered dialog with a title and some centered, wrapped lines of text.
+fn confirm_dialog(f: &mut Frame, title: &str, text: Vec<Line>) {
     let area = f.area();
-    let text = vec![
-        Line::from(t.open_link),
-        Line::default(),
-        Line::styled(url, Style::new().fg(Color::Magenta)),
-        Line::default(),
-        Line::from(format!("Enter {}   Esc {}", t.ok, t.cancel)).style(Style::new().add_modifier(Modifier::BOLD)),
-    ];
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Link ")
+        .title(title)
         .padding(Padding::horizontal(1));
     let para = Paragraph::new(text).block(block).centered().wrap(Wrap { trim: false });
     // exact height after wrapping the question and the address, borders included
