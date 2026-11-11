@@ -25,6 +25,52 @@ use crate::{
 
 const BULLETS: [&str; 3] = ["• ", "◦ ", "⊙ "];
 
+/// Number of a numbered list item as shown on its nesting level: 1, 2, 3 on the first level, then
+/// a, b, c, then i, ii, iii, and again from numbers. The source always uses digits (CommonMark has
+/// no lettered lists); a list starting at 3 starts at c or iii.
+fn ordinal(n: u64, level: usize) -> String {
+    match level % 3 {
+        0 => n.to_string(),
+        1 if n > 0 => {
+            // bijective base 26: z, aa, ab, …
+            let (mut n, mut s) = (n, Vec::new());
+            while n > 0 {
+                n -= 1;
+                s.push(b'a' + (n % 26) as u8);
+                n /= 26;
+            }
+            s.iter().rev().map(|&b| b as char).collect()
+        }
+        2 if (1..4000).contains(&n) => {
+            let mut n = n;
+            let mut s = String::new();
+            for (value, roman) in [
+                (1000, "m"),
+                (900, "cm"),
+                (500, "d"),
+                (400, "cd"),
+                (100, "c"),
+                (90, "xc"),
+                (50, "l"),
+                (40, "xl"),
+                (10, "x"),
+                (9, "ix"),
+                (5, "v"),
+                (4, "iv"),
+                (1, "i"),
+            ] {
+                while n >= value {
+                    s.push_str(roman);
+                    n -= value;
+                }
+            }
+            s
+        }
+        // no letter or roman numeral for 0 (a list may start at 0) or beyond 3999
+        _ => n.to_string(),
+    }
+}
+
 fn code_style() -> Style {
     Style::new().fg(Color::Green)
 }
@@ -672,10 +718,12 @@ impl Renderer<'_> {
                     // sub-items align with the text of the parent item
                     let depth = self.lists.len().saturating_sub(1);
                     let indent = " ".repeat(self.lists.iter().rev().nth(1).map_or(0, |l| l.1));
+                    // nesting level among the numbered lists only, so a bulleted list in between doesn't count
+                    let level = self.lists.iter().filter(|l| l.0.is_some()).count().saturating_sub(1);
                     let marker = match self.lists.last_mut() {
                         Some((Some(n), _)) => {
                             *n += 1;
-                            format!("{}. ", *n - 1)
+                            format!("{}. ", ordinal(*n - 1, level))
                         }
                         _ => BULLETS[depth % BULLETS.len()].into(),
                     };
@@ -908,10 +956,15 @@ mod tests {
             plain("* a\n   * b\n      * c\n         * d\n", 40),
             ["• a", "  ◦ b", "    ⊙ c", "      • d", ""]
         );
-        // numbering restarts at 1 on each level, sub-items under the text of "2. "
+        // numbers, then letters, then roman numerals by level; sub-items under the text of "2. "
         assert_eq!(
-            plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n", 40),
-            ["1. a", "2. b", "   1. c", "   2. d", "      1. e", ""]
+            plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n      2. f\n", 40),
+            ["1. a", "2. b", "   a. c", "   b. d", "      i. e", "      ii. f", ""]
+        );
+        // a bulleted list in between doesn't count as a numbered level
+        assert_eq!(
+            plain("1. a\n   - b\n     1. c\n", 40),
+            ["1. a", "   ◦ b", "     a. c", ""]
         );
         assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑  b", ""]);
         // bulleted task: wrapped text and sub-items align with the task's text
@@ -923,6 +976,21 @@ mod tests {
         );
         // word longer than the line: split
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
+    }
+
+    #[test]
+    fn ordinals_by_level() {
+        assert_eq!(ordinal(12, 0), "12");
+        assert_eq!(
+            [1, 26, 27, 52, 703].map(|n| ordinal(n, 1)),
+            ["a", "z", "aa", "az", "aaa"]
+        );
+        assert_eq!(
+            [1, 4, 9, 14, 1994].map(|n| ordinal(n, 2)),
+            ["i", "iv", "ix", "xiv", "mcmxciv"]
+        );
+        assert_eq!(ordinal(3, 3), "3");
+        assert_eq!((ordinal(0, 1), ordinal(4000, 2)), ("0".into(), "4000".into()));
     }
 
     #[test]

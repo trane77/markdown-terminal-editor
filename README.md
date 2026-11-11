@@ -13,7 +13,8 @@ document on the right, and the two panes scroll together line by line.
   the same height in both panes, even when headings or images take up more rows in the preview.
 - **Real rendering in the terminal.**
   - H1 and H2 headings are drawn in big block letters.
-  - Lists use a different bullet for each nesting level, and numbered sub-lists restart at 1.
+  - Lists use a different bullet for each nesting level. Numbered sub-lists restart from the first
+    item and are numbered 1, 2, 3, then a, b, c, then i, ii, iii by level.
   - Quotes keep a continuous bar, also on wrapped lines.
   - Task lists show checkboxes.
   - Bold, italic, strikethrough and inline code are styled.
