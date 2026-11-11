@@ -99,6 +99,11 @@ struct App<'a> {
     /// mouse position, to highlight the link under the pointer
     hover: Option<Position>,
     dialog: Option<Dialog>,
+    /// the find bar is open and takes the keys; `query` stays for the next Ctrl+F
+    searching: bool,
+    query: String,
+    /// in preview-only view, scroll the preview to the cursor on the next frame (after a search jump)
+    reveal: bool,
     /// the file as we last read or wrote it, to notice when another program changes it
     disk: DiskStamp,
     disk_text: String,
@@ -139,6 +144,9 @@ impl App<'_> {
             links: Vec::new(),
             hover: None,
             dialog: None,
+            searching: false,
+            query: String::new(),
+            reveal: false,
             dragging: false,
             images,
             eol: detect_eol(&text),
@@ -146,6 +154,11 @@ impl App<'_> {
             dirty: false,
             status: String::new(),
         }
+    }
+
+    /// After an edit: unsaved means different from the file, so undoing back to it clears the marker.
+    fn edited(&mut self) {
+        self.dirty = self.contents() != self.disk_text;
     }
 
     /// The editor's text as it would be written to disk.
@@ -265,6 +278,22 @@ mod tests {
         fs::write(path, text).unwrap();
         let images = Images::new(Picker::halfblocks(), ".".into());
         App::new(path.to_string_lossy().into_owned(), text.into(), images)
+    }
+
+    #[test]
+    fn undo_back_to_the_saved_text_clears_the_unsaved_marker() {
+        let images = Images::new(Picker::halfblocks(), ".".into());
+        let mut app = App::new("/nonexistent/doc.md".into(), "one\n".into(), images);
+        app.editor.insert_char('x');
+        app.edited();
+        assert!(app.dirty);
+        assert!(app.editor.undo());
+        app.edited();
+        assert!(!app.dirty);
+        assert!(app.editor.redo());
+        app.edited();
+        assert!(app.dirty);
+        assert_eq!(app.editor.lines(), ["xone"]);
     }
 
     #[test]

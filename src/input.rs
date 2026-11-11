@@ -49,6 +49,10 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             }
             continue;
         }
+        if app.searching {
+            search_key(app, key.code, ctrl);
+            continue;
+        }
         app.status.clear();
 
         match (ctrl, key.code) {
@@ -59,6 +63,27 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
                 app.dialog = Some(Dialog::Quit);
             }
             (true, KeyCode::Char('s')) => app.save(),
+            (true, KeyCode::Char('f')) => {
+                // reopen with the last query, already highlighted
+                app.searching = true;
+                set_query(app);
+            }
+            // the usual undo/redo/paste keys; tui-textarea's own Ctrl+U / Ctrl+R still work too
+            (true, KeyCode::Char('z')) => {
+                if app.editor.undo() {
+                    app.edited();
+                }
+            }
+            (true, KeyCode::Char('y')) => {
+                if app.editor.redo() {
+                    app.edited();
+                }
+            }
+            (true, KeyCode::Char('v')) => {
+                if app.editor.paste() {
+                    app.edited();
+                }
+            }
             (true, KeyCode::Char('e')) => app.view = View::Editor,
             (true, KeyCode::Char('p')) => app.view = View::Preview,
             (true, KeyCode::Char('l')) => {
@@ -78,10 +103,10 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             },
             // tui-textarea would scroll the view without moving the cursor, making `editor_top`
             // impossible to recompute: move the cursor by one page instead
-            (_, KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('v'))
-                if key.code != KeyCode::Char('v') || ctrl || alt =>
+            (_, KeyCode::PageDown | KeyCode::PageUp) | (false, KeyCode::Char('v'))
+                if key.code != KeyCode::Char('v') || alt =>
             {
-                let down = key.code == KeyCode::PageDown || (key.code == KeyCode::Char('v') && ctrl);
+                let down = key.code == KeyCode::PageDown;
                 for _ in 0..app.editor_h {
                     app.editor
                         .move_cursor(if down { CursorMove::Down } else { CursorMove::Up });
@@ -89,7 +114,7 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             }
             _ => {
                 if app.editor.input(key) {
-                    app.dirty = true;
+                    app.edited();
                 }
                 // Ctrl+C / Ctrl+X: besides the editor's internal clipboard, also the system one
                 if ctrl && matches!(key.code, KeyCode::Char('c' | 'x')) {
@@ -98,6 +123,73 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             }
         }
     }
+}
+
+/// Literal, "smart case" search pattern: case-insensitive unless the query has an uppercase letter.
+fn search_pattern(query: &str) -> String {
+    let case = if query.chars().any(char::is_uppercase) {
+        ""
+    } else {
+        "(?i)"
+    };
+    format!("{case}{}", regex::escape(query))
+}
+
+/// Highlights the matches of the current query and moves to the first one from the cursor on.
+fn set_query(app: &mut App) {
+    let pattern = if app.query.is_empty() {
+        String::new()
+    } else {
+        search_pattern(&app.query)
+    };
+    // an escaped query is always a valid pattern
+    let _ = app.editor.set_search_pattern(pattern);
+    if !app.query.is_empty() {
+        app.editor.search_forward(true);
+        app.reveal = true;
+    }
+}
+
+/// Key pressed while the find bar is open: typing edits the query, Enter/↓/Ctrl+F go to the next
+/// match, ↑ to the previous one, Esc closes the bar and clears the highlight.
+fn search_key(app: &mut App, code: KeyCode, ctrl: bool) {
+    match code {
+        KeyCode::Esc => {
+            app.searching = false;
+            let _ = app.editor.set_search_pattern("");
+        }
+        KeyCode::Enter | KeyCode::Down => app.reveal |= app.editor.search_forward(false),
+        KeyCode::Char('f') if ctrl => app.reveal |= app.editor.search_forward(false),
+        KeyCode::Up => app.reveal |= app.editor.search_back(false),
+        KeyCode::Backspace => {
+            app.query.pop();
+            set_query(app);
+        }
+        KeyCode::Char(c) if !ctrl => {
+            app.query.push(c);
+            set_query(app);
+        }
+        _ => {}
+    }
+}
+
+/// Number of matches of the current search, and the 1-based index of the one at the cursor (0 if
+/// the cursor is not on a match).
+pub(crate) fn match_count(app: &App) -> (usize, usize) {
+    let Some(re) = app.editor.search_pattern() else {
+        return (0, 0);
+    };
+    let (row, col) = app.editor.cursor();
+    let (mut total, mut current) = (0, 0);
+    for (r, line) in app.editor.lines().iter().enumerate() {
+        for m in re.find_iter(line) {
+            total += 1;
+            if r == row && line[..m.start()].chars().count() == col {
+                current = total;
+            }
+        }
+    }
+    (total, current)
 }
 
 /// Key pressed while a dialog is open: only Enter (confirm) or Esc (cancel) count, plus Ctrl+Q when
@@ -263,6 +355,35 @@ mod tests {
     use crate::images::Images;
     use ratatui_image::picker::Picker;
     use std::fs;
+
+    #[test]
+    fn search_is_literal_smart_case_and_cycles() {
+        let images = Images::new(Picker::halfblocks(), ".".into());
+        let text = "a.b axb\nA.B\nnone\n";
+        let mut app = App::new("/nonexistent/doc.md".into(), text.into(), images);
+        // "." is literal, and a lowercase query also finds uppercase text
+        for c in "a.b".chars() {
+            search_key(&mut app, KeyCode::Char(c), false);
+        }
+        assert_eq!(match_count(&app), (2, 1));
+        assert_eq!(app.editor.cursor(), (0, 0));
+        search_key(&mut app, KeyCode::Enter, false);
+        assert_eq!((app.editor.cursor(), match_count(&app)), ((1, 0), (2, 2)));
+        // wraps around, and ↑ goes back
+        search_key(&mut app, KeyCode::Down, false);
+        assert_eq!(app.editor.cursor(), (0, 0));
+        search_key(&mut app, KeyCode::Up, false);
+        assert_eq!(app.editor.cursor(), (1, 0));
+        // an uppercase letter makes it case-sensitive
+        app.query = "A.B".into();
+        set_query(&mut app);
+        assert_eq!(match_count(&app), (1, 1));
+        // Esc closes the bar and clears the highlight but keeps the query for the next Ctrl+F
+        app.searching = true;
+        search_key(&mut app, KeyCode::Esc, false);
+        assert!(!app.searching && app.editor.search_pattern().is_none());
+        assert_eq!(app.query, "A.B");
+    }
 
     #[test]
     fn quitting_with_unsaved_changes_asks_first() {

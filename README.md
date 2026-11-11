@@ -28,6 +28,8 @@ document on the right, and the two panes scroll together line by line.
   - Text selection stays inside the editor, and dragging past its edge scrolls.
   - The wheel moves the cursor.
   - Links change color on hover.
+- **Search.** `Ctrl+F` finds text in the document, highlighting every match and showing a match
+  counter. The search is literal and case-insensitive unless the query has an uppercase letter.
 - **System clipboard.** Copy and cut also go to the system clipboard through OSC 52.
 - **Safe with untrusted files.** Control characters in the document are neutralized in the preview,
   so a Markdown file can't send escape sequences to your terminal.
@@ -91,11 +93,12 @@ mdedit test-docs/TEST.md
 | `Ctrl+E` | Editor only |
 | `Ctrl+P` | Preview only |
 | `Ctrl+L` | Split view; press again to switch between side-by-side and stacked |
+| `Ctrl+F` | Find; type to search, `Enter`/`↓` or `Ctrl+F` for the next match, `↑` for the previous one, `Esc` to close |
 | `Ctrl+S` | Save |
 | `Ctrl+Q` | Quit; with unsaved changes, asks whether to save first (`Enter`), quit anyway (`Ctrl+Q`) or cancel (`Esc`) |
 | `Ctrl+C` / `Ctrl+X` | Copy / cut the selection, also to the system clipboard |
-| `Ctrl+Y` | Paste the last copied or cut text |
-| `Ctrl+U` / `Ctrl+R` | Undo / redo |
+| `Ctrl+V` | Paste the last copied or cut text |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (`Ctrl+U` / `Ctrl+R` work too) |
 | `PageUp` / `PageDown` | Move the cursor by one page |
 | `↑` `↓` `PageUp` `PageDown` `Home` | In preview-only mode, scroll the preview |
 
