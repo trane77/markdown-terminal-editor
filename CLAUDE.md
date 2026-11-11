@@ -34,6 +34,8 @@ To check that platform-specific code compiles: `cargo check --target x86_64-pc-w
 - Every user-visible string goes through `tr()`, never a literal in the UI code.
 - Line endings of the edited file are preserved; control characters in documents are neutralized in
   the preview. Don't break either.
+- Windows reports AltGr as Ctrl+Alt: `altgr_as_plain()` in `src/input.rs` turns Ctrl+Alt+char back
+  into a plain character there. Keep it in mind when adding Ctrl or Ctrl+Alt shortcuts.
 
 ## Languages (`src/i18n.rs`)
 
