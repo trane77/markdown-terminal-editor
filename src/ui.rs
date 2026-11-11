@@ -364,22 +364,25 @@ mod tests {
             let b = t.backend().buffer();
             (0..width).map(|x| b[(x, 5)].symbol().to_string()).collect::<String>()
         };
+        // labels in the language of the test run: tr() follows the locale
+        let (lines, ln) = (format!("3 {}", tr().lines), format!("{} 1:1", tr().line));
         let wide = bar(120);
         assert!(
-            wide.contains("notes.md!") && wide.contains("img: ") && wide.contains("3 lines"),
+            wide.contains("notes.md!") && wide.contains("img: ") && wide.contains(&lines),
             "{wide}"
         );
         // image protocol goes first, then the total lines, then the percentage
         let mid = bar(70);
         assert!(
-            !mid.contains("img: ") && mid.contains("3 lines") && mid.contains("0%"),
+            !mid.contains("img: ") && mid.contains(&lines) && mid.contains("0%"),
             "{mid}"
         );
         let narrow = bar(45);
-        assert!(!narrow.contains("lines") && !narrow.contains('%'), "{narrow}");
-        // position, line ending and the file name with its marker always stay
+        assert!(!narrow.contains(tr().lines) && !narrow.contains('%'), "{narrow}");
+        // position, line ending and the file name with its marker always stay; the name may be cut
+        // from the left when the view label is long (e.g. Spanish, German)
         assert!(
-            narrow.contains("Ln 1:1") && narrow.contains("LF") && narrow.contains("notes.md!"),
+            narrow.contains(&ln) && narrow.contains("LF") && narrow.contains(".md!"),
             "{narrow}"
         );
     }
