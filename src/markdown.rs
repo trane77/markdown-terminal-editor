@@ -391,6 +391,7 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
     let mut r = Renderer {
         width: width as usize,
         images,
+        blank_rows: src.lines().map(|l| l.trim().is_empty()).collect(),
         ..Renderer::default()
     };
     // the parser splits text at `_`, `(`, …: merged, a bare URL arrives in one piece
@@ -460,6 +461,8 @@ struct Renderer<'a> {
     links: Vec<(usize, u16, u16, usize)>,
     /// heading anchor → source row; footnote definitions are stored as "^label"
     anchors: HashMap<String, usize>,
+    /// for each source row: whether it is empty (or only whitespace)
+    blank_rows: Vec<bool>,
     table: Option<Table>,
     /// inside `[…](…)`: bare URLs in the link text are not links of their own
     in_link: bool,
@@ -737,6 +740,22 @@ impl Renderer<'_> {
         }
     }
 
+    /// After a paragraph, quote, code block or table: a blank separator row. Inside a list item the
+    /// source decides, so preview and source rows stay aligned: a blank row only if the source has
+    /// one there (a nested list or the next item can follow right away).
+    fn end_block(&mut self) {
+        if self.lists.is_empty() || self.quote > 0 || self.blank_after() {
+            self.blank();
+        } else {
+            self.flush();
+        }
+    }
+
+    /// The source row after the current event is empty.
+    fn blank_after(&self) -> bool {
+        self.blank_rows.get(self.end_line).copied().unwrap_or(false)
+    }
+
     /// Plain text, with bare URLs turned into links (outside `[…](…)` links).
     fn text(&mut self, t: &str) {
         let style = self.style();
@@ -975,7 +994,7 @@ impl Renderer<'_> {
                     }
                     self.blank();
                 }
-                TagEnd::Paragraph => self.blank(),
+                TagEnd::Paragraph => self.end_block(),
                 TagEnd::BlockQuote(_) => {
                     self.styles.pop();
                     self.flush();
@@ -989,13 +1008,13 @@ impl Renderer<'_> {
                         self.src.pop();
                     }
                     self.quote -= 1;
-                    self.blank();
+                    self.end_block();
                 }
                 TagEnd::CodeBlock => {
                     if let Some(code) = self.code.take() {
                         self.code_block(code);
                     }
-                    self.blank();
+                    self.end_block();
                 }
                 TagEnd::List(_) => {
                     self.flush();
@@ -1005,6 +1024,8 @@ impl Renderer<'_> {
                         self.blank();
                     }
                 }
+                // blank row between the items of a loose list, as in the source
+                TagEnd::Item if self.blank_after() => self.blank(),
                 TagEnd::Item => self.flush(),
                 TagEnd::Image => {
                     let Some((dest, alt)) = self.image.take() else { return };
@@ -1061,7 +1082,7 @@ impl Renderer<'_> {
                     if let Some(t) = self.table.take() {
                         self.draw_table(t);
                     }
-                    self.blank();
+                    self.end_block();
                 }
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     self.styles.pop();
@@ -1216,6 +1237,22 @@ mod tests {
         );
         // word longer than the line: split
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
+    }
+
+    #[test]
+    fn loose_lists_keep_source_rows() {
+        // a blank row between items makes the list "loose": item texts become paragraphs, but a
+        // nested list still follows its parent right away, and blank rows match the source
+        let pv = render_markdown("- one\n    - two\n        - three\n\n- four\n", 40, None);
+        assert_eq!(plain_lines(&pv), ["• one", "  ◦ two", "    ⊙ three", "", "• four", ""]);
+        assert_eq!(pv.src.iter().map(|s| s.0).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
+        // the same for quotes and code blocks inside an item
+        assert_eq!(
+            plain("- a\n  > q\n- b\n\n- c\n", 40),
+            ["• a", "│   q", "• b", "", "• c", ""]
+        );
+        // paragraphs of one item separated by a blank row keep it
+        assert_eq!(plain("- a\n\n  b\n- c\n", 40), ["• a", "", "  b", "• c", ""]);
     }
 
     #[test]

@@ -22,6 +22,7 @@
     *   [Inline HTML](#inline-html)
     *   [Backslash Escapes](#backslash-escapes)
     *   [Automatic Links](#automatic-links)
+    *   [Loose Lists](#loose-lists)
 
 
 **Note:** This document is itself written using Markdown; you
@@ -554,3 +555,19 @@ Angle brackets make a link: <https://github.com>.
 
 Bare URLs are links too: https://www.rust-lang.org, www.commonmark.org and
 https://en.wikipedia.org/wiki/Markdown_(disambiguation), without the trailing punctuation.
+
+### Loose Lists
+
+A blank line between items makes a list "loose". The preview keeps the blank lines where the source
+has them, and nowhere else, so a nested list still follows its parent item right away:
+
+- one
+    - nested
+        - deeper
+            - deepest
+
+- two
+  > a quote in the item
+- three
+
+  A second paragraph in the item.
