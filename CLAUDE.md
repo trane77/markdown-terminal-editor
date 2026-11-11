@@ -27,6 +27,19 @@ To check that platform-specific code compiles: `cargo check --target x86_64-pc-w
 | `src/images.rs` | Image sizing, encoding and caches |
 | `src/i18n.rs` | Interface translations and language detection |
 
+## Test document (`test-docs/TEST.md`)
+
+It exercises every supported Markdown element (CommonMark, GFM tables, alerts, footnotes, bare
+URLs). **Whenever support for a new Markdown element is added, or an existing one changes, update it
+in the same change:**
+
+1. Add a section showing the element, its variants and edge cases (e.g. inside a quote or a list
+   item). Put it at the end of the document: the screenshot tapes open this file, and new sections
+   at the end keep the screenshots stable.
+2. Add a link to that section in the table of contents at the top, unless one already exists. The
+   anchor is the GitHub slug of the heading (`### Horizontal Rules` → `#horizontal-rules`). Check
+   that every link in the table of contents leads to an existing section.
+
 ## Conventions
 
 - Code, comments, doc comments and string literals (test data included) are in English. The only
