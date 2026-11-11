@@ -1,8 +1,11 @@
 //! Markdown → righe d'anteprima: a capo, liste, citazioni, titoli grandi, immagini, link.
 
 use std::{
+    borrow::{Borrow, Cow},
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    env,
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -11,9 +14,8 @@ use ratatui::{
     text::{Line, Span},
 };
 use syntect::{
-    easy::HighlightLines,
-    highlighting::{FontStyle, Theme, ThemeSet},
-    parsing::SyntaxSet,
+    highlighting::{FontStyle, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
+    parsing::{ParseState, ScopeStack, SyntaxSet},
 };
 
 use crate::{
@@ -31,43 +33,104 @@ fn code_style() -> Style {
 fn syntaxes() -> &'static (SyntaxSet, Theme) {
     static S: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
     S.get_or_init(|| {
-        let theme = ThemeSet::load_defaults()
-            .themes
+        let mut themes = ThemeSet::load_defaults().themes;
+        // se il tema cambiasse nome, un altro tra quelli inclusi: quello vuoto darebbe testo nero su grigio scuro
+        let theme = themes
             .remove("base16-eighties.dark")
+            .or_else(|| themes.into_values().next())
             .unwrap_or_default();
         (two_face::syntax::extra_newlines(), theme)
     })
 }
 
+/// Colore del tema per il terminale: a 24 bit se li dichiara (COLORTERM, Windows Terminal),
+/// altrimenti il più vicino della tavolozza a 256 colori.
+fn term_color(r: u8, g: u8, b: u8) -> Color {
+    static TRUECOLOR: OnceLock<bool> = OnceLock::new();
+    let truecolor = *TRUECOLOR.get_or_init(|| {
+        env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit") || env::var_os("WT_SESSION").is_some()
+    });
+    if truecolor {
+        Color::Rgb(r, g, b)
+    } else {
+        indexed(r, g, b)
+    }
+}
+
+/// Il più vicino tra il cubo 6x6x6 (16..=231) e la scala di grigi (232..=255) dei 256 colori.
+fn indexed(r: u8, g: u8, b: u8) -> Color {
+    const STEPS: [i32; 6] = [0, 95, 135, 175, 215, 255];
+    let (r, g, b) = (r as i32, g as i32, b as i32);
+    let near = |v: i32| (0..6).min_by_key(|&i| (STEPS[i] - v).abs()).unwrap_or(0);
+    let (ri, gi, bi) = (near(r), near(g), near(b));
+    let gray = (((r + g + b) / 3 - 8 + 5) / 10).clamp(0, 23);
+    let dist = |cr: i32, cg: i32, cb: i32| (cr - r).pow(2) + (cg - g).pow(2) + (cb - b).pow(2);
+    let gv = 8 + 10 * gray;
+    if dist(gv, gv, gv) < dist(STEPS[ri], STEPS[gi], STEPS[bi]) {
+        Color::Indexed(232 + gray as u8)
+    } else {
+        Color::Indexed((16 + 36 * ri + 6 * gi + bi) as u8)
+    }
+}
+
 /// Sfondo dei blocchi di codice: quello del tema, un grigio scuro un po' più chiaro del terminale.
 fn code_bg() -> Color {
-    let c = syntaxes()
-        .1
-        .settings
-        .background
-        .unwrap_or(syntect::highlighting::Color {
-            r: 45,
-            g: 45,
-            b: 45,
-            a: 255,
-        });
-    Color::Rgb(c.r, c.g, c.b)
+    let bg = syntaxes().1.settings.background;
+    bg.map_or(term_color(45, 45, 45), |c| term_color(c.r, c.g, c.b))
+}
+
+/// Blocco di codice evidenziato, con lo stato dell'evidenziatore dopo ogni riga: quando il blocco
+/// cambia si riparte dalla prima riga diversa invece che dall'inizio.
+struct Highlighted {
+    lang: String,
+    code: String,
+    lines: Vec<Vec<Span<'static>>>,
+    states: Vec<(ParseState, HighlightState)>,
+}
+
+/// Blocchi evidenziati nel disegno in corso e in quello precedente: l'anteprima si ricalcola a ogni
+/// disegno, e ciò che non è più nel documento esce dalla cache dopo un giro.
+#[derive(Default)]
+struct HighlightCache {
+    cur: HashMap<u64, Arc<Highlighted>>,
+    prev: HashMap<u64, Arc<Highlighted>>,
+}
+
+fn highlight_cache() -> MutexGuard<'static, HighlightCache> {
+    static CACHE: OnceLock<Mutex<HighlightCache>> = OnceLock::new();
+    CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// Righe di codice colorate per `lang` (nome o estensione, es. "rust", "py"); testo semplice se sconosciuto.
-fn highlight(lang: &str, code: &str) -> Vec<Vec<Span<'static>>> {
-    // l'anteprima si ricalcola a ogni disegno: si rievidenzia solo il codice cambiato
-    // ponytail: svuota tutto oltre una soglia; un LRU se i documenti hanno centinaia di blocchi
-    type Cache = HashMap<(String, String), Vec<Vec<Span<'static>>>>;
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let mut cache = CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let key = (lang.to_string(), code.to_string());
-    if let Some(lines) = cache.get(&key) {
-        return lines.clone();
+fn highlight(lang: &str, code: &str) -> Arc<Highlighted> {
+    let mut hasher = DefaultHasher::new();
+    (lang, code).hash(&mut hasher);
+    let key = hasher.finish();
+    let mut cache = highlight_cache();
+    let same = |b: &Highlighted| b.lang == lang && b.code == code;
+    if let Some(b) = cache.cur.get(&key).filter(|b| same(b)) {
+        return b.clone();
     }
+    if let Some(b) = cache.prev.remove(&key).filter(|b| same(b)) {
+        cache.cur.insert(key, b.clone());
+        return b;
+    }
+    // blocco modificato: si tengono le righe iniziali uguali a quelle della versione più simile
+    // ponytail: una modifica in cima a un blocco lo rievidenzia tutto; servirebbe confrontare gli stati
+    let old = cache
+        .cur
+        .values()
+        .chain(cache.prev.values())
+        .filter(|b| b.lang == lang)
+        .map(|b| (b.code.lines().zip(code.lines()).take_while(|(a, b)| a == b).count(), b))
+        .max_by_key(|(n, _)| *n);
+    let (mut lines, mut states) = old.map_or_else(Default::default, |(n, b)| {
+        (b.lines[..n].to_vec(), b.states[..n].to_vec())
+    });
+
     let (ss, theme) = syntaxes();
     // nomi comuni nei ``` che le grammatiche non riconoscono
     let token = match lang.to_lowercase().as_str() {
@@ -80,20 +143,20 @@ fn highlight(lang: &str, code: &str) -> Vec<Vec<Span<'static>>> {
     let syntax = ss
         .find_syntax_by_token(token)
         .unwrap_or_else(|| ss.find_syntax_plain_text());
-    let mut h = HighlightLines::new(syntax, theme);
-    let bg = code_bg();
-    let lines: Vec<Vec<Span<'static>>> = code
-        .lines()
-        .map(|line| {
-            let line = format!("{line}\n");
-            let regions = h.highlight_line(&line, ss).unwrap_or_default();
-            regions
-                .into_iter()
+    let highlighter = Highlighter::new(theme);
+    let (mut parse, mut hl) = states.last().cloned().unwrap_or_else(|| {
+        (
+            ParseState::new(syntax),
+            HighlightState::new(&highlighter, ScopeStack::new()),
+        )
+    });
+    let bg = Style::new().bg(code_bg());
+    for line in code.lines().skip(lines.len()) {
+        let text = format!("{line}\n");
+        let spans = match parse.parse_line(&text, ss) {
+            Ok(ops) => HighlightIterator::new(&mut hl, &ops, &text, &highlighter)
                 .map(|(st, text)| {
-                    let mut style =
-                        Style::new()
-                            .bg(bg)
-                            .fg(Color::Rgb(st.foreground.r, st.foreground.g, st.foreground.b));
+                    let mut style = bg.fg(term_color(st.foreground.r, st.foreground.g, st.foreground.b));
                     if st.font_style.contains(FontStyle::BOLD) {
                         style = style.add_modifier(Modifier::BOLD);
                     }
@@ -102,14 +165,50 @@ fn highlight(lang: &str, code: &str) -> Vec<Vec<Span<'static>>> {
                     }
                     Span::styled(text.trim_end_matches('\n').to_string(), style)
                 })
-                .collect()
-        })
-        .collect();
-    if cache.len() > 256 {
-        cache.clear();
+                .collect(),
+            // riga che l'evidenziatore non riesce a leggere: resta visibile, senza colori
+            Err(_) => vec![Span::styled(line.to_string(), bg)],
+        };
+        lines.push(spans);
+        states.push((parse.clone(), hl.clone()));
     }
-    cache.insert(key, lines.clone());
-    lines
+    let block = Arc::new(Highlighted {
+        lang: lang.to_string(),
+        code: code.to_string(),
+        lines,
+        states,
+    });
+    cache.cur.insert(key, block.clone());
+    block
+}
+
+/// Toglie dal sorgente ciò che il terminale interpreterebbe: i caratteri di controllo (ESC, BEL, ...)
+/// diventano U+FFFD e le tabulazioni spazi fino alla colonna multipla di 4. Le righe restano le stesse.
+fn sanitize(src: &str) -> Cow<'_, str> {
+    if !src.chars().any(|c| c.is_control() && c != '\n') {
+        return Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut col = 0;
+    for c in src.chars() {
+        match c {
+            '\n' => {
+                out.push(c);
+                col = 0;
+            }
+            '\t' => {
+                let n = 4 - col % 4;
+                out.extend(std::iter::repeat_n(' ', n));
+                col += n;
+            }
+            '\r' => {}
+            c => {
+                out.push(if c.is_control() { '\u{FFFD}' } else { c });
+                col += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Blocco di codice in lettura: il testo arriva a pezzi e si evidenzia tutto insieme alla fine.
@@ -174,6 +273,12 @@ impl Preview {
 }
 
 pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>) -> Preview {
+    let src = sanitize(src);
+    let src = src.as_ref();
+    {
+        let mut cache = highlight_cache();
+        cache.prev = std::mem::take(&mut cache.cur);
+    }
     let starts: Vec<usize> = std::iter::once(0)
         .chain(src.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
@@ -346,8 +451,8 @@ type LinkSpan = (u16, u16, usize);
 /// (barra delle citazioni + rientro delle liste). Le parole più lunghe della riga vengono spezzate.
 /// Ogni riga prodotta porta la riga sorgente del suo primo carattere e i pezzi di link interni
 /// che contiene: (colonna, larghezza, link).
-fn wrap(
-    spans: Vec<(Span<'static>, usize, Option<usize>)>,
+fn wrap<S: Borrow<Span<'static>>>(
+    spans: impl IntoIterator<Item = (S, usize, Option<usize>)>,
     width: usize,
     first: Vec<Span<'static>>,
     cont: Vec<Span<'static>>,
@@ -355,10 +460,11 @@ fn wrap(
     use unicode_width::UnicodeWidthChar;
     let cw = |c: char| c.width().unwrap_or(0);
     type Ch = (char, Style, usize, Option<usize>);
-    let chars: Vec<Ch> = spans
-        .iter()
-        .flat_map(|(s, src, link)| s.content.chars().map(move |c| (c, s.style, *src, *link)))
-        .collect();
+    let mut chars: Vec<Ch> = Vec::new();
+    for (s, src, link) in spans {
+        let s = s.borrow();
+        chars.extend(s.content.chars().map(|c| (c, s.style, src, link)));
+    }
 
     let mut lines = Vec::new();
     let mut prefix = first;
@@ -490,44 +596,35 @@ impl Renderer<'_> {
         let bg = Style::new().bg(code_bg());
         let (bar, indent) = (self.bar(), " ".repeat(self.indent));
         let prefix = || vec![bar.clone(), Span::raw(indent.clone()), Span::styled("  ", bg)];
-        let fill = |mut spans: Vec<Span<'static>>, width: usize| {
-            let used: usize = spans.iter().map(Span::width).sum();
+        let width = self.width;
+        // `right` va allineato al margine destro; lo sfondo riempie il resto della riga
+        let fill = |mut spans: Vec<Span<'static>>, right: Option<Span<'static>>| {
+            let used: usize = spans.iter().chain(&right).map(Span::width).sum();
             spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
+            spans.extend(right);
             Line::from(spans)
         };
-        let width = self.width;
         if code.fenced {
-            let mut head = prefix();
-            let used: usize = head.iter().map(Span::width).sum();
-            let label = &code.lang;
-            let label_w = unicode_width::UnicodeWidthStr::width(label.as_str());
-            if !label.is_empty() && used + label_w < width {
-                head.push(Span::styled(" ".repeat(width - used - label_w - 1), bg));
-                head.push(Span::styled(
-                    label.clone(),
-                    bg.fg(Color::Gray).add_modifier(Modifier::ITALIC),
-                ));
-            }
-            self.push_line(fill(head, width), self.line, true);
+            let label = format!("{} ", code.lang);
+            let label = Span::styled(label, bg.fg(Color::Gray).add_modifier(Modifier::ITALIC));
+            let fits =
+                !code.lang.is_empty() && prefix().iter().map(Span::width).sum::<usize>() + label.width() <= width;
+            self.push_line(fill(prefix(), fits.then_some(label)), self.line, true);
         }
         let first = code.first.unwrap_or(self.line);
-        for (i, spans) in highlight(&code.lang, &code.text).into_iter().enumerate() {
+        let hl = highlight(&code.lang, &code.text);
+        for (i, spans) in hl.lines.iter().enumerate() {
             let src = first + i;
-            let rows = wrap(
-                spans.into_iter().map(|s| (s, src, None)).collect(),
-                width,
-                prefix(),
-                prefix(),
-            );
+            let rows = wrap(spans.iter().map(|s| (s, src, None)), width, prefix(), prefix());
             if rows.is_empty() {
-                self.push_line(fill(prefix(), width), src, true);
+                self.push_line(fill(prefix(), None), src, true);
             }
             for (line, src, _) in rows {
-                self.push_line(fill(line.spans, width), src, true);
+                self.push_line(fill(line.spans, None), src, true);
             }
         }
         if code.fenced {
-            self.push_line(fill(prefix(), width), self.end_line.saturating_sub(1), true);
+            self.push_line(fill(prefix(), None), self.end_line.saturating_sub(1), true);
         }
     }
 
@@ -548,7 +645,15 @@ impl Renderer<'_> {
                 Tag::CodeBlock(kind) => {
                     self.flush();
                     let (lang, fenced) = match kind {
-                        CodeBlockKind::Fenced(info) => (info.split_whitespace().next().unwrap_or("").to_string(), true),
+                        // "rust,ignore" (rustdoc) e "{.python .numberLines}" (pandoc): conta solo il primo nome
+                        CodeBlockKind::Fenced(info) => {
+                            let lang = info
+                                .trim_start_matches(['{', '.'])
+                                .split(|c: char| c == ',' || c == '}' || c.is_whitespace())
+                                .next()
+                                .unwrap_or("");
+                            (lang.to_string(), true)
+                        }
                         CodeBlockKind::Indented => (String::new(), false),
                     };
                     self.code = Some(CodeBlock {
@@ -896,6 +1001,49 @@ mod tests {
         assert_ne!(fg("fn"), fg("main"));
         // linguaggio sconosciuto: testo semplice, ma l'etichetta resta
         assert!(plain_lines(&pv)[4].ends_with("boh"));
+    }
+
+    #[test]
+    fn code_blocks_keep_quote_bar_and_list_indent() {
+        let pv = render_markdown("> ```\n> x\n> ```\n\n- a\n\n  ```\n  y\n  ```\n", 30, None);
+        let text = |i: usize| plain_lines(&pv)[i].clone();
+        assert_eq!(text(pv.row_for(1)), "│   x");
+        assert_eq!(text(pv.row_for(0)), "│");
+        assert_eq!(text(pv.row_for(7)), "    y");
+        // le righe ``` hanno la loro riga d'anteprima anche dentro citazioni e liste
+        for code in [1, 7] {
+            assert_eq!(pv.row_for(code - 1) + 1, pv.row_for(code));
+            assert_eq!(pv.row_for(code + 1), pv.row_for(code) + 1);
+        }
+    }
+
+    #[test]
+    fn code_info_strings_and_incremental_highlight() {
+        let pv = plain(
+            "```rust,ignore\nfn a() {}\n```\n\n```{.python .numberLines}\nx = 1\n```\n",
+            30,
+        );
+        assert!(pv[0].ends_with(" rust") && pv[4].ends_with(" python"), "{pv:?}");
+        // ripartire dalle righe iniziali già evidenziate dà lo stesso risultato che rifare tutto
+        // ("rs" è un'altra chiave di cache: non riusa nulla)
+        highlight("rust", "fn a() {\n    let s = \"x\";\n}\n");
+        let code = "fn a() {\n    let s = \"x\";\n    /* c\n    d */ 1\n}\n";
+        assert_eq!(highlight("rust", code).lines, highlight("rs", code).lines);
+        assert_eq!(indexed(45, 45, 45), Color::Indexed(236));
+        assert_eq!(indexed(255, 0, 0), Color::Indexed(196));
+    }
+
+    #[test]
+    fn control_chars_and_tabs_never_reach_the_terminal() {
+        let pv = render_markdown("```\nA\x1b]0;x\x07B\n\tC\n```\n\nX\x1b[2JY\ta\r\n", 30, None);
+        assert!(pv
+            .lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .all(|s| !s.content.contains(char::is_control)));
+        let t = plain_lines(&pv);
+        assert_eq!(t[1..3], ["  A\u{FFFD}]0;x\u{FFFD}B", "      C"]);
+        assert_eq!(t[5], "X\u{FFFD}[2JY  a");
     }
 
     #[test]
