@@ -20,8 +20,10 @@ sed -i "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml
 cargo update --workspace --offline   # refresh mdedit's version in Cargo.lock only
 cargo test --locked
 scripts/screenshots.sh   # the release README links to the screenshots at this tag
-git add docs
+git add Cargo.toml Cargo.lock docs
 
-git commit -am "Release $tag"
+# Nothing to commit when the version is already X.Y.Z and the screenshots did not change:
+# then the current commit is tagged as it is.
+git diff --cached --quiet || git commit -m "Release $tag"
 git tag -a "$tag" -m "$tag"
 git push origin HEAD "$tag"
