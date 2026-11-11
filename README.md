@@ -13,17 +13,21 @@ document on the right, and the two panes scroll together line by line.
   the same height in both panes, even when headings or images take up more rows in the preview.
 - **Real rendering in the terminal.**
   - H1 and H2 headings are drawn in big block letters.
-  - Lists use a different bullet for each nesting level, and numbered sub-lists restart at 1.
+  - Lists use a different bullet for each nesting level. Numbered sub-lists restart from the first
+    item and are numbered 1, 2, 3, then a, b, c, then i, ii, iii by level.
   - Quotes keep a continuous bar, also on wrapped lines.
   - Task lists show checkboxes.
-  - Bold, italic, strikethrough and inline code are styled.
+  - Tables have borders and column alignment, and wrap their cells to fit the pane.
+  - GitHub alerts (`> [!NOTE]`, `[!TIP]`, …), footnotes and horizontal rules.
+  - Bold, italic, strikethrough and inline code are styled; HTML comments are hidden.
 - **Images.** Real images on terminals that support sixel, kitty or iTerm2 graphics, colored
   half-blocks elsewhere. A missing or remote image shows its alt text.
 - **Code blocks.** Syntax highlighting for dozens of languages (Rust, Python, TypeScript, Go, Bash,
   JSON, YAML, TOML, SQL, Dockerfile, …), on a full-width background with the language name in the
   corner.
-- **Links.** Clicking an internal `#anchor` link jumps to its heading (GitHub-style anchors).
-  External `http(s)://` and `mailto:` links open in your browser after a confirmation prompt.
+- **Links.** Clicking an internal `#anchor` link jumps to its heading (GitHub-style anchors), and a
+  footnote reference to its note. External `http(s)://` and `mailto:` links, bare URLs included,
+  open in your browser after a confirmation prompt.
 - **Mouse support.**
   - Text selection stays inside the editor, and dragging past its edge scrolls.
   - The wheel moves the cursor.
@@ -34,7 +38,8 @@ document on the right, and the two panes scroll together line by line.
 - **Safe with untrusted files.** Control characters in the document are neutralized in the preview,
   so a Markdown file can't send escape sequences to your terminal.
 - **Six interface languages.** English, Italian, Spanish, German, Portuguese and French, picked from
-  your locale.
+  your locale (`LC_ALL`, `LC_MESSAGES`, `LANG`) or, if unset, from the system language on
+  Windows and macOS.
 - **Your file stays as it was.** Line endings (LF or CRLF) are kept when you save.
 - **Notices changes made by other programs.** If the file changes on disk while it's open, mdedit
   asks whether to reload it or keep your version, and it never overwrites those changes without

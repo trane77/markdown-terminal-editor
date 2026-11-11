@@ -34,6 +34,8 @@ pub(crate) struct Tr {
     pub(crate) reload: &'static str,
     pub(crate) keep: &'static str,
     pub(crate) reloaded: &'static str,
+    /// titles of the GitHub alerts `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`
+    pub(crate) alerts: [&'static str; 5],
 }
 
 const EN: Tr = Tr {
@@ -66,6 +68,7 @@ const EN: Tr = Tr {
     reload: "Reload",
     keep: "Keep my version",
     reloaded: "Reloaded from disk",
+    alerts: ["Note", "Tip", "Important", "Warning", "Caution"],
 };
 
 const ES: Tr = Tr {
@@ -108,6 +111,7 @@ const ES: Tr = Tr {
     reload: "Recargar",
     keep: "Mantener mi versión",
     reloaded: "Recargado desde el disco",
+    alerts: ["Nota", "Consejo", "Importante", "Advertencia", "Precaución"],
 };
 
 const DE: Tr = Tr {
@@ -140,6 +144,7 @@ const DE: Tr = Tr {
     reload: "Neu laden",
     keep: "Meine Version behalten",
     reloaded: "Von der Festplatte neu geladen",
+    alerts: ["Hinweis", "Tipp", "Wichtig", "Warnung", "Vorsicht"],
 };
 
 const PT: Tr = Tr {
@@ -182,6 +187,7 @@ const PT: Tr = Tr {
     reload: "Recarregar",
     keep: "Manter a minha versão",
     reloaded: "Recarregado do disco",
+    alerts: ["Nota", "Dica", "Importante", "Aviso", "Cuidado"],
 };
 
 const FR: Tr = Tr {
@@ -214,6 +220,7 @@ const FR: Tr = Tr {
     reload: "Recharger",
     keep: "Garder ma version",
     reloaded: "Rechargé depuis le disque",
+    alerts: ["Remarque", "Astuce", "Important", "Avertissement", "Attention"],
 };
 
 const IT: Tr = Tr {
@@ -246,9 +253,10 @@ const IT: Tr = Tr {
     reload: "Ricarica",
     keep: "Mantieni la mia versione",
     reloaded: "Ricaricato dal disco",
+    alerts: ["Nota", "Suggerimento", "Importante", "Avvertenza", "Attenzione"],
 };
 
-/// Language from the POSIX locale (LC_ALL > LC_MESSAGES > LANG, e.g. "de_DE.UTF-8"); English if unset or untranslated.
+/// Language from a locale name, POSIX ("de_DE.UTF-8") or BCP 47 ("de-DE"); English if untranslated.
 fn lang(locale: &str) -> &'static Tr {
     match locale.get(..2) {
         Some("es") => &ES,
@@ -260,13 +268,17 @@ fn lang(locale: &str) -> &'static Tr {
     }
 }
 
+/// The POSIX locale variables (LC_ALL > LC_MESSAGES > LANG) win, so they also override the system
+/// language on Windows and macOS. If none is set (usual on Windows, and in some macOS terminals),
+/// the user's preferred UI language from the OS is used.
 pub(crate) fn tr() -> &'static Tr {
     static TR: OnceLock<&Tr> = OnceLock::new();
     TR.get_or_init(|| {
-        let var = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
             .iter()
-            .find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()));
-        lang(&var.unwrap_or_default())
+            .find_map(|v| env::var(v).ok().filter(|s| !s.is_empty()))
+            .or_else(sys_locale::get_locale);
+        lang(&locale.unwrap_or_default())
     })
 }
 
@@ -278,6 +290,7 @@ mod tests {
     fn picks_language_from_locale() {
         assert_eq!(lang("de_DE.UTF-8").preview, "Vorschau");
         assert_eq!(lang("pt_BR").saved, "Guardado");
+        assert_eq!(lang("it-IT").preview, "Anteprima");
         assert_eq!(lang("C.UTF-8").preview, "Preview");
         assert_eq!(lang("").preview, "Preview");
     }

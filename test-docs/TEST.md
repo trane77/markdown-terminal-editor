@@ -2,23 +2,26 @@
 
 *   [Overview](#overview)
     *   [Philosophy](#philosophy)
-    *   [Inline HTML](#html)
-    *   [Automatic Escaping for Special Characters](#autoescape)
 *   [Block Elements](#block-elements)
     *   [Paragraphs and Line Breaks](#paragraphs-and-line-breaks)
     *   [Headers](#headers)
     *   [Blockquotes](#blockquotes)
     *   [Lists](#lists)
     *   [Code Blocks](#code-blocks)
-    *   [Horizontal Rules](#hr)
 *   [Span Elements](#span-elements)
     *   [Links](#links)
     *   [Emphasis](#emphasis)
     *   [Code](#code)
     *   [Images](#images)
-*   [Miscellaneous](#misc)
-    *   [Backslash Escapes](#backslash)
-    *   [Automatic Links](#autolink)
+*   [GitHub Flavored Markdown](#github-flavored-markdown)
+    *   [Tables](#tables)
+    *   [Alerts](#alerts)
+    *   [Footnotes](#footnotes)
+*   [Miscellaneous](#miscellaneous)
+    *   [Horizontal Rules](#horizontal-rules)
+    *   [Inline HTML](#inline-html)
+    *   [Backslash Escapes](#backslash-escapes)
+    *   [Automatic Links](#automatic-links)
 
 
 **Note:** This document is itself written using Markdown; you
@@ -440,3 +443,114 @@ Text before ![inline](img/panorama.png) and after an image in the same paragraph
 A missing file shows only its alt text: ![Missing file](img/does-not-exist.png)
 
 A remote image shows only its alt text: ![Remote logo](https://example.com/logo.png)
+
+## GitHub Flavored Markdown
+
+### Tables
+
+Columns are separated by pipes, and the row of dashes under the header sets the alignment of each
+column: `:--` left, `:-:` center, `--:` right.
+
+| Fruit      | Color  | Price | Notes                         |
+|:-----------|:------:|------:|-------------------------------|
+| Apple      | red    |  1.20 | **crisp**, see [Lists](#lists) |
+| Banana     | yellow |  0.50 | `peel first`                  |
+| Kiwi fruit | green  |  0.80 | ~~expensive~~ cheap now       |
+| Lime       |        |       |                               |
+
+A wide table shrinks its widest columns and wraps their cells to fit the pane:
+
+| Feature | Description |
+|---------|-------------|
+| Scroll sync | In split view the preview follows the editor so that the cursor's line sits at the same height in both panes. |
+| Images | Real images on terminals that support sixel, kitty or iTerm2 graphics, colored half-blocks elsewhere. |
+
+> A table inside a blockquote:
+>
+> | Key | Action |
+> |-----|--------|
+> | ^S  | save   |
+> | ^Q  | quit   |
+
+- A table inside a list item:
+
+  | a | b |
+  |---|---|
+  | 1 | 2 |
+
+### Alerts
+
+> [!NOTE]
+> Useful information that users should know, even when skimming content.
+
+> [!TIP]
+> Helpful advice for doing things better or more easily.
+
+> [!IMPORTANT]
+> Key information users need to know to achieve their goal.
+
+> [!WARNING]
+> Urgent info that needs immediate user attention to avoid problems.
+
+> [!CAUTION]
+> Advises about risks or negative outcomes of certain actions.
+
+### Footnotes
+
+Here is a simple footnote[^1], and here is a longer one[^bignote]. Clicking a reference jumps to
+its note.
+
+[^1]: My reference.
+
+[^bignote]: Here's one with multiple paragraphs and code.
+
+    Indent paragraphs to include them in the footnote.
+
+    `{ my code }`
+
+## Miscellaneous
+
+### Horizontal Rules
+
+Three or more hyphens, asterisks or underscores on a line of their own, after a blank line:
+
+---
+
+***
+
+___
+
+* * *
+
+> A rule inside a blockquote:
+>
+> ---
+>
+> keeps the bar.
+
+Without a blank line before it, `---` turns the line above into a heading instead:
+
+Setext heading
+---
+
+### Inline HTML
+
+HTML is shown as it is, but comments are hidden: before <!-- hidden --> after.
+
+<!--
+A hidden
+HTML block comment.
+-->
+
+<kbd>Ctrl</kbd>+<kbd>S</kbd> saves the file.
+
+### Backslash Escapes
+
+\*not italic\*, \`not code\`, \# not a heading, \[not a link\](#tables), 1\. not a list.
+
+### Automatic Links
+
+Angle brackets make a link: <https://github.com>.
+
+Bare URLs are links too: https://www.rust-lang.org, www.commonmark.org and
+https://en.wikipedia.org/wiki/Markdown_(disambiguation), without the trailing punctuation.

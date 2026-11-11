@@ -8,11 +8,14 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeWithOffset,
+};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use regex::Regex;
 use syntect::{
     highlighting::{FontStyle, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
     parsing::{ParseState, ScopeStack, SyntaxSet},
@@ -25,8 +28,99 @@ use crate::{
 
 const BULLETS: [&str; 3] = ["• ", "◦ ", "⊙ "];
 
+/// Number of a numbered list item as shown on its nesting level: 1, 2, 3 on the first level, then
+/// a, b, c, then i, ii, iii, and again from numbers. The source always uses digits (CommonMark has
+/// no lettered lists); a list starting at 3 starts at c or iii.
+fn ordinal(n: u64, level: usize) -> String {
+    match level % 3 {
+        0 => n.to_string(),
+        1 if n > 0 => {
+            // bijective base 26: z, aa, ab, …
+            let (mut n, mut s) = (n, Vec::new());
+            while n > 0 {
+                n -= 1;
+                s.push(b'a' + (n % 26) as u8);
+                n /= 26;
+            }
+            s.iter().rev().map(|&b| b as char).collect()
+        }
+        2 if (1..4000).contains(&n) => {
+            let mut n = n;
+            let mut s = String::new();
+            for (value, roman) in [
+                (1000, "m"),
+                (900, "cm"),
+                (500, "d"),
+                (400, "cd"),
+                (100, "c"),
+                (90, "xc"),
+                (50, "l"),
+                (40, "xl"),
+                (10, "x"),
+                (9, "ix"),
+                (5, "v"),
+                (4, "iv"),
+                (1, "i"),
+            ] {
+                while n >= value {
+                    s.push_str(roman);
+                    n -= value;
+                }
+            }
+            s
+        }
+        // no letter or roman numeral for 0 (a list may start at 0) or beyond 3999
+        _ => n.to_string(),
+    }
+}
+
 fn code_style() -> Style {
     Style::new().fg(Color::Green)
+}
+
+fn link_style() -> Style {
+    Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)
+}
+
+fn border_style() -> Style {
+    Style::new().fg(Color::DarkGray)
+}
+
+/// Bare URLs that GitHub turns into links (GFM "extended autolinks"): `https://…`, `http://…` and
+/// `www.…`, without trailing punctuation or an unbalanced closing parenthesis.
+/// ponytail: no email autolinks and no domain validation, add them if they turn out to matter
+fn bare_urls(text: &str) -> Vec<std::ops::Range<usize>> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\b(?:https?://|www\.)[^\s<]+").expect("valid regex"));
+    re.find_iter(text)
+        .filter_map(|m| {
+            let mut url = m.as_str();
+            loop {
+                let unbalanced = url.ends_with(')') && url.matches(')').count() > url.matches('(').count();
+                if url.ends_with(['?', '!', '.', ',', ':', ';', '*', '_', '~', '\'', '"']) || unbalanced {
+                    url = &url[..url.len() - 1];
+                } else {
+                    break;
+                }
+            }
+            let prefix = if url.starts_with("www.") {
+                4
+            } else {
+                url.find("//")? + 2
+            };
+            (url.len() > prefix).then(|| m.start()..m.start() + url.len())
+        })
+        .collect()
+}
+
+/// Piece of text waiting to be wrapped: span, source row, link index.
+type Pending = (Span<'static>, usize, Option<usize>);
+
+/// Table being read: column alignments and, for each row (the header first), its source row and
+/// the pieces of each cell. Drawn all at once at the end, when every column width is known.
+struct Table {
+    aligns: Vec<Alignment>,
+    rows: Vec<(usize, Vec<Vec<Pending>>)>,
 }
 
 /// Grammars and theme for code blocks, loaded on first use.
@@ -272,6 +366,17 @@ impl Preview {
     }
 }
 
+/// The GitHub Flavored Markdown extensions, plus the ones github.com renders on top: footnotes and
+/// alerts (`ENABLE_GFM`). Math (`ENABLE_MATH`) is left for the version that also draws Mermaid
+/// diagrams: until then `$…$` stays plain text.
+fn gfm_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_GFM
+}
+
 pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>) -> Preview {
     let src = sanitize(src);
     let src = src.as_ref();
@@ -288,9 +393,8 @@ pub(crate) fn render_markdown(src: &str, width: u16, images: Option<&mut Images>
         images,
         ..Renderer::default()
     };
-    for (ev, range) in
-        Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter()
-    {
+    // the parser splits text at `_`, `(`, …: merged, a bare URL arrives in one piece
+    for (ev, range) in TextMergeWithOffset::new(Parser::new_ext(src, gfm_options()).into_offset_iter()) {
         r.line = line_of(range.start);
         // row after the last one with content: some blocks (lists) include the blank lines after them
         let end = src[..range.end].trim_end().len();
@@ -337,7 +441,7 @@ struct Renderer<'a> {
     line: usize,
     end_line: usize,
     /// text waiting to be wrapped, with the source row and the link (if any) of each piece
-    spans: Vec<(Span<'static>, usize, Option<usize>)>,
+    spans: Vec<Pending>,
     styles: Vec<Style>,
     width: usize,
     /// for each open list: next number (None = bulleted) and text indent of the current item
@@ -354,8 +458,13 @@ struct Renderer<'a> {
     link: Option<usize>,
     /// link pieces on the produced lines: (line, column, width, index in `dests`)
     links: Vec<(usize, u16, u16, usize)>,
-    /// heading anchor → source row
+    /// heading anchor → source row; footnote definitions are stored as "^label"
     anchors: HashMap<String, usize>,
+    table: Option<Table>,
+    /// inside `[…](…)`: bare URLs in the link text are not links of their own
+    in_link: bool,
+    /// inside an HTML comment, hidden as on GitHub
+    comment: bool,
 }
 
 fn heading_style(level: HeadingLevel) -> Style {
@@ -628,6 +737,106 @@ impl Renderer<'_> {
         }
     }
 
+    /// Plain text, with bare URLs turned into links (outside `[…](…)` links).
+    fn text(&mut self, t: &str) {
+        let style = self.style();
+        let push = |r: &mut Self, s: &str, style: Style| {
+            if !s.is_empty() {
+                r.push_span(Span::styled(s.to_string(), style));
+            }
+        };
+        let mut last = 0;
+        for url in if self.in_link { Vec::new() } else { bare_urls(t) } {
+            push(self, &t[last..url.start], style);
+            let u = &t[url.clone()];
+            self.dests.push(if u.starts_with("www.") {
+                format!("http://{u}")
+            } else {
+                u.to_string()
+            });
+            self.link = Some(self.dests.len() - 1);
+            push(self, u, style.patch(link_style()));
+            self.link = None;
+            last = url.end;
+        }
+        push(self, &t[last..], style);
+    }
+
+    /// Table with box-drawing borders, after the quote bar and the list indent. Columns get their
+    /// widest cell, then the widest ones shrink until the table fits; cells wrap inside them.
+    /// Rows map to their source rows; the separator under the header to the `|---|` row.
+    fn draw_table(&mut self, t: Table) {
+        let lead = vec![self.bar(), Span::raw(" ".repeat(self.indent))];
+        let lead_w: usize = lead.iter().map(Span::width).sum();
+        let ncols = t.rows.iter().map(|r| r.1.len()).max().unwrap_or(0).max(t.aligns.len());
+        let (Some(first), Some(last)) = (t.rows.first().map(|r| r.0), t.rows.last().map(|r| r.0)) else {
+            return;
+        };
+        let mut widths = vec![1; ncols];
+        for (_, cells) in &t.rows {
+            for (w, cell) in widths.iter_mut().zip(cells) {
+                *w = (*w).max(cell.iter().map(|s| s.0.width()).sum());
+            }
+        }
+        // "│ " + cells separated by " │ " + " │"
+        let avail = self.width.saturating_sub(lead_w + 3 * ncols + 1);
+        // ponytail: shrinks one cell at a time, plenty fast for tables that fit a terminal
+        while widths.iter().sum::<usize>() > avail {
+            match widths.iter_mut().max() {
+                Some(w) if *w > 1 => *w -= 1,
+                _ => break,
+            }
+        }
+        let border = |l: &str, m: &str, r: &str| {
+            let segs: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
+            let mut spans = lead.clone();
+            spans.push(Span::styled(format!("{l}{}{r}", segs.join(m)), border_style()));
+            Line::from(spans)
+        };
+        self.push_line(border("┌", "┬", "┐"), first, false);
+        for (ri, (src, cells)) in t.rows.iter().enumerate() {
+            let wrapped: Vec<_> = (0..ncols)
+                .map(|i| {
+                    let cell = cells.get(i).map_or(&[][..], |c| &c[..]);
+                    wrap(cell.iter().map(|(s, r, l)| (s, *r, *l)), widths[i], vec![], vec![])
+                })
+                .collect();
+            let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
+            for k in 0..height {
+                let n = self.lines.len();
+                let mut spans = lead.clone();
+                spans.push(Span::styled("│ ", border_style()));
+                let mut x = lead_w + 2;
+                for (i, rows) in wrapped.iter().enumerate() {
+                    let (content, hits) = rows
+                        .get(k)
+                        .map_or((Vec::new(), Vec::new()), |(l, _, h)| (l.spans.clone(), h.clone()));
+                    let w: usize = content.iter().map(Span::width).sum();
+                    let pad = widths[i].saturating_sub(w);
+                    let (left, right) = match t.aligns.get(i) {
+                        Some(Alignment::Right) => (pad, 0),
+                        Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                        _ => (0, pad),
+                    };
+                    // link pieces are relative to the cell: move them to its column
+                    let cx = (x + left) as u16;
+                    self.links
+                        .extend(hits.into_iter().map(|(hx, hw, l)| (n, cx + hx, hw, l)));
+                    spans.push(Span::raw(" ".repeat(left)));
+                    spans.extend(content);
+                    spans.push(Span::raw(" ".repeat(right)));
+                    spans.push(Span::styled(if i + 1 < ncols { " │ " } else { " │" }, border_style()));
+                    x += left + w + right + 3;
+                }
+                self.push_line(Line::from(spans), *src, true);
+            }
+            if ri == 0 {
+                self.push_line(border("├", "┼", "┤"), src + 1, true);
+            }
+        }
+        self.push_line(border("└", "┴", "┘"), last, false);
+    }
+
     fn event(&mut self, ev: Event) {
         let width = self.width;
         match ev {
@@ -637,10 +846,23 @@ impl Renderer<'_> {
                     self.push_style(heading_style(level));
                     self.heading = Some((level, String::new()));
                 }
-                Tag::BlockQuote(_) => {
+                Tag::BlockQuote(kind) => {
                     self.flush();
                     self.quote += 1;
                     self.push_style(Style::new().add_modifier(Modifier::ITALIC));
+                    // GitHub alert: its title on the `> [!NOTE]` row
+                    if let Some(kind) = kind {
+                        let (i, color) = match kind {
+                            BlockQuoteKind::Note => (0, Color::Blue),
+                            BlockQuoteKind::Tip => (1, Color::Green),
+                            BlockQuoteKind::Important => (2, Color::Magenta),
+                            BlockQuoteKind::Warning => (3, Color::Yellow),
+                            BlockQuoteKind::Caution => (4, Color::Red),
+                        };
+                        let style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+                        self.push_span(Span::styled(tr().alerts[i], style));
+                        self.flush();
+                    }
                 }
                 Tag::CodeBlock(kind) => {
                     self.flush();
@@ -672,10 +894,12 @@ impl Renderer<'_> {
                     // sub-items align with the text of the parent item
                     let depth = self.lists.len().saturating_sub(1);
                     let indent = " ".repeat(self.lists.iter().rev().nth(1).map_or(0, |l| l.1));
+                    // nesting level among the numbered lists only, so a bulleted list in between doesn't count
+                    let level = self.lists.iter().filter(|l| l.0.is_some()).count().saturating_sub(1);
                     let marker = match self.lists.last_mut() {
                         Some((Some(n), _)) => {
                             *n += 1;
-                            format!("{}. ", *n - 1)
+                            format!("{}. ", ordinal(*n - 1, level))
                         }
                         _ => BULLETS[depth % BULLETS.len()].into(),
                     };
@@ -696,7 +920,33 @@ impl Renderer<'_> {
                         self.dests.push(dest_url.to_string());
                         self.link = Some(self.dests.len() - 1);
                     }
-                    self.push_style(Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED));
+                    self.in_link = true;
+                    self.push_style(link_style());
+                }
+                Tag::FootnoteDefinition(label) => {
+                    // in place, not moved to the end as on GitHub: preview and source stay aligned
+                    self.flush();
+                    self.anchors.insert(format!("^{}", label.to_lowercase()), self.line);
+                    let marker = Span::styled(format!("[{label}]: "), Style::new().fg(Color::Yellow));
+                    self.indent = marker.width();
+                    self.at_marker = true;
+                    self.push_span(marker);
+                }
+                Tag::Table(aligns) => {
+                    self.flush();
+                    self.table = Some(Table {
+                        aligns,
+                        rows: Vec::new(),
+                    });
+                }
+                Tag::TableHead | Tag::TableRow => {
+                    if matches!(tag, Tag::TableHead) {
+                        self.push_style(Style::new().add_modifier(Modifier::BOLD));
+                    }
+                    let line = self.line;
+                    if let Some(t) = &mut self.table {
+                        t.rows.push((line, Vec::new()));
+                    }
                 }
                 _ => {}
             },
@@ -761,7 +1011,14 @@ impl Renderer<'_> {
                     // after the quote bar and the list item indent
                     let x = (2 * self.quote + self.indent) as u16;
                     let avail = (self.width as u16).saturating_sub(x);
-                    match self.images.as_deref_mut().and_then(|im| im.size(&dest, avail)) {
+                    // in a table cell an image would break the rows: only its alt text
+                    let in_table = self.table.is_some();
+                    match self
+                        .images
+                        .as_deref_mut()
+                        .filter(|_| !in_table)
+                        .and_then(|im| im.size(&dest, avail))
+                    {
                         Some((path, cols, rows)) => {
                             self.flush();
                             let line = self.lines.len();
@@ -784,7 +1041,27 @@ impl Renderer<'_> {
                 }
                 TagEnd::Link => {
                     self.link = None;
+                    self.in_link = false;
                     self.styles.pop();
+                }
+                TagEnd::FootnoteDefinition => {
+                    self.flush();
+                    self.indent = self.lists.last().map_or(0, |l| l.1);
+                }
+                TagEnd::TableHead => {
+                    self.styles.pop();
+                }
+                TagEnd::TableCell => {
+                    let cell = std::mem::take(&mut self.spans);
+                    if let Some((_, cells)) = self.table.as_mut().and_then(|t| t.rows.last_mut()) {
+                        cells.push(cell);
+                    }
+                }
+                TagEnd::Table => {
+                    if let Some(t) = self.table.take() {
+                        self.draw_table(t);
+                    }
+                    self.blank();
                 }
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     self.styles.pop();
@@ -809,18 +1086,30 @@ impl Renderer<'_> {
                 }
                 self.push_span(Span::styled(t.into_string(), self.style()));
             }
-            Event::Text(t) => self.push_span(Span::styled(t.into_string(), self.style())),
+            Event::Text(t) => self.text(&t),
             Event::Code(t) => self.push_span(Span::styled(t.into_string(), code_style())),
+            // not emitted: ENABLE_MATH is off (see `gfm_options`)
+            Event::InlineMath(_) | Event::DisplayMath(_) => {}
+            Event::FootnoteReference(label) => {
+                self.dests.push(format!("#^{label}"));
+                let outer = self.link.replace(self.dests.len() - 1);
+                self.push_span(Span::styled(format!("[{label}]"), link_style()));
+                self.link = outer;
+            }
+            // a comment can arrive in several pieces (one per line in an HTML block)
+            Event::Html(t) | Event::InlineHtml(t) if self.comment || t.trim_start().starts_with("<!--") => {
+                self.comment = !t.contains("-->");
+            }
             Event::Html(t) | Event::InlineHtml(t) => self.push_span(Span::raw(t.trim_end().to_string())),
             Event::SoftBreak => self.push_span(Span::raw(" ")),
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.flush();
-                self.push_line(
-                    Line::styled("─".repeat(width), Style::new().fg(Color::DarkGray)),
-                    self.line,
-                    true,
-                );
+                // inside quotes and list items: after the bar and the indent, like the text
+                let mut spans = vec![self.bar(), Span::raw(" ".repeat(self.indent))];
+                let used: usize = spans.iter().map(Span::width).sum();
+                spans.push(Span::styled("─".repeat(width.saturating_sub(used)), border_style()));
+                self.push_line(Line::from(spans), self.line, true);
                 self.blank();
             }
             Event::TaskListMarker(done) => {
@@ -841,7 +1130,6 @@ impl Renderer<'_> {
                     }
                 }
             }
-            _ => {}
         }
     }
 }
@@ -908,10 +1196,15 @@ mod tests {
             plain("* a\n   * b\n      * c\n         * d\n", 40),
             ["• a", "  ◦ b", "    ⊙ c", "      • d", ""]
         );
-        // numbering restarts at 1 on each level, sub-items under the text of "2. "
+        // numbers, then letters, then roman numerals by level; sub-items under the text of "2. "
         assert_eq!(
-            plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n", 40),
-            ["1. a", "2. b", "   1. c", "   2. d", "      1. e", ""]
+            plain("1. a\n2. b\n   1. c\n   2. d\n      1. e\n      2. f\n", 40),
+            ["1. a", "2. b", "   a. c", "   b. d", "      i. e", "      ii. f", ""]
+        );
+        // a bulleted list in between doesn't count as a numbered level
+        assert_eq!(
+            plain("1. a\n   - b\n     1. c\n", 40),
+            ["1. a", "   ◦ b", "     a. c", ""]
         );
         assert_eq!(plain("- a\n  - [x] b\n", 40), ["• a", "  ☑  b", ""]);
         // bulleted task: wrapped text and sub-items align with the task's text
@@ -923,6 +1216,120 @@ mod tests {
         );
         // word longer than the line: split
         assert_eq!(plain("abcdef\n", 4), ["abcd", "ef", ""]);
+    }
+
+    #[test]
+    fn renders_tables() {
+        let src = "| Name | Qty | Notes |\n|:--|--:|:-:|\n| apple | 3 | [x](#name) |\n| kiwi fruit | 12 |\n";
+        let pv = render_markdown(src, 40, None);
+        assert_eq!(
+            plain_lines(&pv),
+            [
+                "┌────────────┬─────┬───────┐",
+                "│ Name       │ Qty │ Notes │",
+                "├────────────┼─────┼───────┤",
+                "│ apple      │   3 │   x   │",
+                "│ kiwi fruit │  12 │       │",
+                "└────────────┴─────┴───────┘",
+                "",
+            ]
+        );
+        // each row on its own source row, the separator on the |---| row
+        assert_eq!(
+            pv.src,
+            [
+                (0, false),
+                (0, true),
+                (1, true),
+                (2, true),
+                (3, true),
+                (3, false),
+                (4, false)
+            ]
+        );
+        // the link inside a cell is clickable where it is drawn
+        let link = &pv.links[0];
+        assert_eq!((link.line, link.x, link.width), (3, 23, 1));
+        // too narrow: widest columns shrink and cells wrap, without panicking
+        assert_eq!(
+            plain("| a | b |\n|-|-|\n| hello | wo |\n", 11),
+            [
+                "┌────┬────┐",
+                "│ a  │ b  │",
+                "├────┼────┤",
+                "│ he │ wo │",
+                "│ ll │    │",
+                "│ o  │    │",
+                "└────┴────┘",
+                "",
+            ]
+        );
+        assert_eq!(
+            plain("| a | b | c | d |\n|-|-|-|-|\n| hello | world | foo | bar |\n", 6).len(),
+            10
+        );
+        // inside a quote and a list item: after the bar and the indent
+        assert_eq!(
+            plain("> | a |\n> |---|\n> | b |\n", 20),
+            ["│ ┌───┐", "│ │ a │", "│ ├───┤", "│ │ b │", "│ └───┘", ""]
+        );
+        assert_eq!(
+            plain("- x\n\n  | a |\n  |---|\n", 20)[2..5],
+            ["  ┌───┐", "  │ a │", "  ├───┤"]
+        );
+    }
+
+    #[test]
+    fn renders_github_extensions() {
+        // footnotes stay where they are written, and the reference jumps to the definition
+        let pv = render_markdown("Text[^1].\n\n[^1]: The note, long enough to wrap.\n", 24, None);
+        assert_eq!(
+            plain_lines(&pv),
+            ["Text[1].", "", "[1]: The note, long", "     enough to wrap.", ""]
+        );
+        assert_eq!((pv.links[0].dest.as_str(), pv.links[0].target), ("#^1", Some(2)));
+        // alerts: the title (translated) on the [!NOTE] row
+        let title = format!("│ {}", tr().alerts[3]);
+        assert_eq!(
+            plain("> [!WARNING]\n> Be careful.\n", 30),
+            [title.as_str(), "│ Be careful.", ""]
+        );
+        // HTML comments are hidden, inline and as blocks
+        assert_eq!(
+            plain("a <!-- x --> b\n\n<!--\nblock\n-->\n\nafter\n", 30),
+            ["a  b", "", "after", ""]
+        );
+        // a rule inside a quote keeps the bar
+        assert_eq!(plain("> a\n>\n> ---\n", 8), ["│ a", "│ ", "│ ──────", ""]);
+        // bare URLs are links, but not inside the text of a link
+        let pv = render_markdown("See www.rust-lang.org, or [https://a.io](https://b.io).\n", 80, None);
+        let dests: Vec<_> = pv.links.iter().map(|l| l.dest.as_str()).collect();
+        assert_eq!(dests, ["http://www.rust-lang.org", "https://b.io"]);
+    }
+
+    #[test]
+    fn finds_bare_urls() {
+        let urls = |t: &str| bare_urls(t).into_iter().map(|r| t[r].to_string()).collect::<Vec<_>>();
+        assert_eq!(urls("go to https://example.com/a_(b))."), ["https://example.com/a_(b)"]);
+        assert_eq!(urls("www.x.org, http://y.io?"), ["www.x.org", "http://y.io"]);
+        assert_eq!(urls("(see https://z.io/p)"), ["https://z.io/p"]);
+        // a bare prefix or one inside a word is not a link
+        assert!(urls("https:// and awww.x.org").is_empty());
+    }
+
+    #[test]
+    fn ordinals_by_level() {
+        assert_eq!(ordinal(12, 0), "12");
+        assert_eq!(
+            [1, 26, 27, 52, 703].map(|n| ordinal(n, 1)),
+            ["a", "z", "aa", "az", "aaa"]
+        );
+        assert_eq!(
+            [1, 4, 9, 14, 1994].map(|n| ordinal(n, 2)),
+            ["i", "iv", "ix", "xiv", "mcmxciv"]
+        );
+        assert_eq!(ordinal(3, 3), "3");
+        assert_eq!((ordinal(0, 1), ordinal(4000, 2)), ("0".into(), "4000".into()));
     }
 
     #[test]

@@ -9,7 +9,8 @@ use std::{
 
 use ratatui::{
     crossterm::event::{
-        self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     },
     layout::Position,
     DefaultTerminal,
@@ -31,6 +32,7 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             continue;
         }
         let key = match event::read()? {
+            TermEvent::Key(key) if cfg!(windows) => altgr_as_plain(key),
             TermEvent::Key(key) => key,
             TermEvent::Mouse(m) => {
                 on_mouse(app, m);
@@ -123,6 +125,18 @@ pub(crate) fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<(
             }
         }
     }
+}
+
+/// On Windows AltGr is reported as Ctrl+Alt, so a character typed with it (`#`, `@`, `[`, … on many
+/// layouts) arrives as Ctrl+Alt+char, which the editor and the find bar would ignore as a shortcut.
+/// Drop both modifiers so it is typed like any other character. Not applied elsewhere: on Linux and
+/// macOS AltGr/Option characters already arrive plain, and Ctrl+Alt+letter are tui-textarea keys.
+fn altgr_as_plain(mut key: KeyEvent) -> KeyEvent {
+    let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    if matches!(key.code, KeyCode::Char(_)) && key.modifiers.contains(altgr) {
+        key.modifiers.remove(altgr);
+    }
+    key
 }
 
 /// Literal, "smart case" search pattern: case-insensitive unless the query has an uppercase letter.
@@ -355,6 +369,23 @@ mod tests {
     use crate::images::Images;
     use ratatui_image::picker::Picker;
     use std::fs;
+
+    #[test]
+    fn altgr_characters_are_typed_plain() {
+        let key = |code, modifiers| altgr_as_plain(KeyEvent::new(code, modifiers));
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        assert_eq!(key(KeyCode::Char('#'), altgr).modifiers, KeyModifiers::NONE);
+        assert_eq!(
+            key(KeyCode::Char('{'), altgr | KeyModifiers::SHIFT).modifiers,
+            KeyModifiers::SHIFT
+        );
+        // real shortcuts are left alone
+        assert_eq!(
+            key(KeyCode::Char('s'), KeyModifiers::CONTROL).modifiers,
+            KeyModifiers::CONTROL
+        );
+        assert_eq!(key(KeyCode::Left, altgr).modifiers, altgr);
+    }
 
     #[test]
     fn search_is_literal_smart_case_and_cycles() {
