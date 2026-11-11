@@ -4,18 +4,18 @@
     *   [Philosophy](#philosophy)
     *   [Inline HTML](#html)
     *   [Automatic Escaping for Special Characters](#autoescape)
-*   [Block Elements](#block)
-    *   [Paragraphs and Line Breaks](#p)
-    *   [Headers](#header)
-    *   [Blockquotes](#blockquote)
-    *   [Lists](#list)
-    *   [Code Blocks](#precode)
+*   [Block Elements](#block-elements)
+    *   [Paragraphs and Line Breaks](#paragraphs-and-line-breaks)
+    *   [Headers](#headers)
+    *   [Blockquotes](#blockquotes)
+    *   [Lists](#lists)
+    *   [Code Blocks](#code-blocks)
     *   [Horizontal Rules](#hr)
-*   [Span Elements](#span)
-    *   [Links](#link)
-    *   [Emphasis](#em)
+*   [Span Elements](#span-elements)
+    *   [Links](#links)
+    *   [Emphasis](#emphasis)
     *   [Code](#code)
-    *   [Images](#img)
+    *   [Images](#images)
 *   [Miscellaneous](#misc)
     *   [Backslash Escapes](#backslash)
     *   [Automatic Links](#autolink)
@@ -226,6 +226,22 @@ to be indented *twice* -- 8 spaces or two tabs:
 
         <code goes here>
 
+Task lists, a GitHub Flavored Markdown extension, put a checkbox
+in front of each item: `[ ]` for an open task, `[x]` for a done one.
+They can be nested and mixed with plain items:
+
+- [x] Write the first draft
+- [x] Add images and code samples
+- [ ] Review the whole document
+  - [x] Check the headings
+  - [ ] Fix the broken links
+  - [ ] Proofread the code blocks
+- [ ] Publish it
+- A plain item in the same list
+
+1. [x] Numbered lists can hold tasks too
+2. [ ] This one is still open
+
 ### Code Blocks
 
 Pre-formatted code blocks are used for writing about programming or
@@ -269,6 +285,86 @@ tell application "Foo"
 end tell
 ```
 
+Fenced code blocks can name their language, which enables syntax
+highlighting; the name is shown at the top right of the block:
+
+```rust
+use std::collections::HashMap;
+
+/// Counts how many times each word appears.
+fn word_count(text: &str) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    counts
+}
+```
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: float = 0.0
+    y: float = 0.0
+
+    def norm(self) -> float:
+        return (self.x ** 2 + self.y ** 2) ** 0.5  # Euclidean
+```
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+export async function fetchUser(id: number): Promise<User> {
+  const res = await fetch(`/api/users/${id}`);
+  return res.json();
+}
+```
+
+```bash
+#!/usr/bin/env bash
+for f in *.md; do
+  echo "Converting $f"
+  pandoc "$f" -o "${f%.md}.html"
+done
+```
+
+```json
+{
+  "name": "mdedit",
+  "version": "0.1.0",
+  "features": ["preview", "images", "highlighting"],
+  "stable": true
+}
+```
+
+```toml
+[package]
+name = "mdedit"
+edition = "2021"
+
+[dependencies]
+syntect = { version = "5.3", default-features = false }
+```
+
+```sql
+SELECT name, COUNT(*) AS posts
+FROM users JOIN posts ON posts.user_id = users.id
+WHERE posts.created_at > '2024-01-01'
+GROUP BY name
+ORDER BY posts DESC;
+```
+
+An unknown language keeps the block style without colors:
+
+```klingon
+Qapla'!
+```
+
 ## Span Elements
 
 ### Links
@@ -301,6 +397,14 @@ _single underscores_
 
 __double underscores__
 
+Text wrapped with double tildes (`~~`) is struck through, an extension
+supported by GitHub Flavored Markdown:
+
+~~double tildes~~
+
+Styles can be combined: ***bold italic***, **bold with ~~strikethrough~~**,
+and *italic with ~~strikethrough~~*.
+
 ### Code
 
 To indicate a span of code, wrap it with backtick quotes (`` ` ``).
@@ -308,3 +412,31 @@ Unlike a pre-formatted code block, a code span indicates code within a
 normal paragraph. For example:
 
 Use the `printf()` function.
+
+### Images
+
+Markdown uses an image syntax that is intended to resemble the syntax
+for links: an exclamation mark, followed by the alt text in square
+brackets, followed by the path in parentheses.
+
+A wide image (PNG), scaled down to the pane width:
+
+![Panorama with sun and hills](img/panorama.png)
+
+A tall image (JPEG), limited in height:
+
+![Colored stripes](img/stripes.jpg "Stripes")
+
+Text before ![inline](img/panorama.png) and after an image in the same paragraph.
+
+- A list item with an image:
+
+  ![Panorama in a list](img/panorama.png)
+
+> A blockquote with an image:
+>
+> ![Stripes in a quote](img/stripes.jpg)
+
+A missing file shows only its alt text: ![Missing file](img/does-not-exist.png)
+
+A remote image shows only its alt text: ![Remote logo](https://example.com/logo.png)
