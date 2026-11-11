@@ -57,10 +57,13 @@ items:
 
 ## Installation
 
-You need a recent stable Rust toolchain, which you can install with [rustup](https://rustup.rs). No system libraries are required.
+Prebuilt binaries for Linux, Windows and macOS are attached to each
+[GitHub release](https://github.com/trane77/markdown-terminal-editor/releases).
+
+To build from source you need a recent stable Rust toolchain, which you can install with [rustup](https://rustup.rs). No system libraries are required.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/trane77/markdown-terminal-editor.git
 cd markdown-terminal-editor
 cargo build --release
 ```
@@ -141,6 +144,11 @@ rustup; VHS runs from its official Docker image):
 scripts/screenshots.sh
 ```
 
+To publish a release, run `scripts/release.sh X.Y.Z` on a clean tree: it sets the version, runs the
+tests, regenerates the screenshots (needs Docker), commits, tags `vX.Y.Z` and pushes. The tag
+triggers `.github/workflows/release.yml`, which builds the binaries and attaches them to a GitHub
+release.
+
 Pass one or more tapes to regenerate only those, e.g.
 `scripts/screenshots.sh docs/tapes/screenshot_2_code.tape`. To add a screenshot, copy a tape, change
 the text it searches for and the output file, then reference the new image here.
@@ -160,3 +168,11 @@ Built with [ratatui](https://ratatui.rs), [tui-textarea](https://github.com/rhys
 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark),
 [ratatui-image](https://github.com/benjajaja/ratatui-image),
 [syntect](https://github.com/trishume/syntect) and [two-face](https://github.com/CosmicHorrorDev/two-face).
+
+## License
+
+Copyright (C) 2026 Federico Ricchiuto
+
+mdedit is free software, released under the [GNU General Public License v3.0](LICENSE)
+(`GPL-3.0-only`). You may use, modify and redistribute it, provided that you keep the copyright
+notice and distribute any modified version under the same license, with its source code.
